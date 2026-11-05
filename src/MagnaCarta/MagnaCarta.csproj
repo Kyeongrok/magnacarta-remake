@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <OutputType>WinExe</OutputType>
+        <TargetFramework>net8.0-windows</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+        <!-- BMP·JPEG·GIF 를 풀 때 System.Drawing 을 쓴다 (TGA 는 손으로 푼다) -->
+        <UseWindowsForms>true</UseWindowsForms>
+        <ApplicationManifest>app.manifest</ApplicationManifest>
+        <RootNamespace>MagnaCarta</RootNamespace>
+        <!-- 실행 파일 아이콘: 원본 폴더의 mc.ico 가 있으면 쓴다(저장소에는 두지 않는다) -->
+        <GameIcon>C:\Users\ocean\Desktop\ETC\DGGL\Games\MagCarta_Win_230428\Store\mc.ico</GameIcon>
+        <ApplicationIcon Condition="Exists('$(GameIcon)')">$(GameIcon)</ApplicationIcon>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
+        <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    </ItemGroup>
+
+</Project>

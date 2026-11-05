@@ -8,6 +8,8 @@ on:
 
 jobs:
   publish:
+    # 템플릿 저장소에서만 — 같은 기록을 magnacarta-remake 에도 올려 v* 태그가 겹친다
+    if: github.repository == 'Kyeongrok/directx-app-template'
     runs-on: ubuntu-latest
 
     steps:

@@ -1,0 +1,79 @@
+name: Build and Release (Magna Carta)
+
+# v 로 시작하는 태그(예: v0.1.0)를 push 하면 마그나카르타 패치판을 빌드해 GitHub 릴리즈에 올린다.
+# 손으로 돌리면 릴리즈는 안 만들고 exe 를 Actions 산출물로만 올린다.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    if: github.repository == 'Kyeongrok/magnacarta-remake'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Get version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if ($tag -notmatch '^v\d') { $tag = 'v0.0.0' }
+          $version = $tag.TrimStart('v')
+          $parts = $version.Split('.')
+          while ($parts.Count -lt 3) { $parts += '0' }
+          $version = $parts -join '.'
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+
+      # x86 으로 낸다 — 원본 동영상(Bink)을 원본 폴더의 binkw32.dll(32비트)로 틀기 때문(src/MagnaCarta/README.md).
+      # 설치 없이 도는 단일 exe. 원본 게임 자료는 넣지 않는다(저작물) — exe 를 원본 마그나카르타 폴더에 넣고 돌린다.
+      - name: Publish
+        shell: pwsh
+        run: |
+          $v = "${{ steps.version.outputs.version }}"
+          dotnet publish src/MagnaCarta/MagnaCarta.csproj -c Release -r win-x86 --self-contained true -o publish `
+            -p:PlatformTarget=x86 `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:DebugType=none `
+            -p:Version=$v -p:AssemblyVersion=$v -p:FileVersion=$v -p:InformationalVersion=$v
+          if ($LASTEXITCODE -ne 0) { throw "publish 실패" }
+          if (-not (Test-Path publish/MagnaCarta.exe)) { throw "publish 에 MagnaCarta.exe 가 없습니다" }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item src/MagnaCarta/README.md publish/README.md
+          Compress-Archive -Path publish/MagnaCarta.exe, publish/README.md -DestinationPath "dist/MagnaCarta-v$v.zip" -Force
+          Get-ChildItem publish, dist | Select-Object Name, Length | Format-Table -AutoSize
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: magnacarta-${{ steps.version.outputs.version }}
+          path: |
+            publish/MagnaCarta.exe
+            dist/*.zip
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $v = "${{ steps.version.outputs.version }}"
+          $notes = @"
+          마그나카르타 패치판 v$v
+
+          - **MagnaCarta.exe** — 설치 없이 바로 실행하는 단일 파일(Windows, 원본 동영상을 위해 32비트).
+          - 원본 게임 자료는 들어 있지 않습니다. 원본 마그나카르타 폴더(3DOBS·MAP 등이 있는 곳)에 exe 를 넣고 실행하세요.
+          "@
+          gh release create "${{ github.ref_name }}" publish/MagnaCarta.exe "dist/MagnaCarta-v$v.zip" --title "${{ github.ref_name }}" --notes $notes
