@@ -44,6 +44,12 @@ dotnet run --project src\MagnaCarta -- --script "wait:2.2;key:enter;wait:3;hold:
 
 원본에서 못 딴 값·고친 원본 버그·고를 것은 옵시디안 `Project\Magnacarta\작업\패치목록.md`, 분석은 `분석\`. 분석용 파이썬은 `tools\mc\`.
 
+## 버그 리포트
+
+어느 화면에서나 **F12** — 글 쓰는 창이 뜨고, 보내면 통계 worker(`war-of-genesis-stats` 의 `POST /v1/bug?game=mc`)로 간다(대시보드 「마그나카르타」 탭).
+같이 가는 것: 판 번호 · 장면(필드 번호 · 전투 …) · OS · 32/64비트 · 화면 크기 · `crash.txt` 끝(사용자 이름은 지움). 못 보내면 `%LOCALAPPDATA%\MagnaCartaPatchug-queue` 에 두었다가 다음에 켤 때 보낸다.
+시험(`--script`)은 `MC_STATS_URL` 을 줄 때만 보내고, `MC_BUGREPORT_TEXT` 가 있으면 창 없이 그 글을 보낸다.
+
 ## 동영상(Bink)
 
 원본 동영상(MOV\*.BMC)은 원본 폴더의 `binkw32.dll`(32비트)로 튼다 — **x86 으로 빌드했을 때만** 나온다:

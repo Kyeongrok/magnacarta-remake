@@ -18,12 +18,15 @@ internal sealed class GameWindow : IDisposable
     private bool _running = true;
     private int _lastX, _lastY;
     private readonly Queue<string> _script;
+    private readonly bool _test;
     private float _scriptWait;
     private readonly List<(int Vk, float Left)> _held = [];
 
     public GameWindow(string? script, bool battle = false, int field = -1)
     {
         _script = new Queue<string>((script ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        _test = script != null;
+        Scenes.BugReport.UploadQueued(_test);   // 지난번에 못 보낸 버그 리포트
         _proc = WndProc;
         var instance = Win32.GetModuleHandleW(null);
         var wc = new Win32.WndClassEx
@@ -77,6 +80,8 @@ internal sealed class GameWindow : IDisposable
             last = now;
 
             string? shot = RunScript(dt);
+            // F12 — 어느 화면에서나 버그 리포트(대시보드 「마그나카르타」 탭으로 간다)
+            if (_input.Pressed(0x7B)) { Scenes.BugReport.Open(_hwnd, Describe(_scene), _gfx.Width, _gfx.Height, _test); last = clock.Elapsed.TotalSeconds; }
             var next = _scene.Update(dt, _input);
             _input.EndFrame();
             if (next != _scene)
@@ -175,6 +180,15 @@ internal sealed class GameWindow : IDisposable
         }
         return Win32.DefWindowProcW(hWnd, msg, wParam, lParam);
     }
+
+    private static string Describe(Scenes.IScene scene) => scene switch
+    {
+        Scenes.FieldScene f => $"필드 {f.FieldNumber}" + (f.PlaceName.Length > 0 ? $" {f.PlaceName}" : ""),
+        Scenes.BattleScene => "전투",
+        Scenes.TitleScene => "타이틀",
+        Scenes.MovieScene => "동영상",
+        _ => scene.GetType().Name,
+    };
 
     public void Dispose()
     {

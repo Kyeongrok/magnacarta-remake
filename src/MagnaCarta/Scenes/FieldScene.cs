@@ -171,6 +171,8 @@ internal sealed partial class FieldScene : IScene
     }
 
     public Vector3 Position => _pos;
+    public int FieldNumber => _field.Number;
+    public string PlaceName => _field.PlaceName;
 
 
     private void ShowTitle(string text)
