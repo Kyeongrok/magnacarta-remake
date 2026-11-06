@@ -169,15 +169,22 @@ def parse_events(d, off):
     return evs, o
 
 
+def _plausible(evs):
+    """조건 갈래 0·100·101·302·304, 명령 0~999 — 가짜 짝(468 앞 후보처럼 실수 값이 조건 자리에)을 거른다."""
+    return all(all(c[0] in (0, 100, 101, 302, 304) for c in cc) and all(0 <= a[0] < 1000 for a in aa) for t, cc, aa in evs)
+
+
 def find_events(d):
-    """파일 끝에서 정확히 끝나는 이벤트 블록의 시작 자리를 찾는다."""
-    best = None
+    """파일 끝에서 정확히 끝나는 이벤트 블록 중 그럴듯한 것의 가장 앞 자리(없으면 가장 앞 후보).
+    뒤에서 처음 맞는 자리만 쓰면 29 개 필드(161·655·771 …)에서 묶음 꼬리의 가짜 짝을 잡았다(2026-11-06)."""
+    best = anyoff = None
     for off in range(len(d) - 8, 0, -4):
         r = parse_events(d, off)
         if r and r[1] == len(d):
-            best = off
-            break
-    return best
+            anyoff = off
+            if _plausible(r[0]):
+                best = off
+    return best if best is not None else anyoff
 
 
 def scan(p, pred, start=0x1000, end=0xbd000):

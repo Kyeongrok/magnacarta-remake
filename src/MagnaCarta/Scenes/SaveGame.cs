@@ -10,7 +10,7 @@ namespace MagnaCarta.Scenes;
 internal static class SaveGame
 {
     public sealed record Data(int Field, float X, float Y, float Z, float Yaw, string Place, DateTime Time,
-        Dictionary<int, int> Switches, List<int> Items, List<int[]> Chests, List<int>? Party = null, Dictionary<int, int[]>? Equipment = null, Dictionary<int, List<int>>? Evolutions = null, Dictionary<int, List<int>>? AdoraShare = null, List<CharDto>? Overrides = null, double PlayMs = 0, int[]? CartaPoints = null, Dictionary<int, int[]>? AffinityBonus = null, List<int>? Benched = null, Dictionary<int, List<int>>? Learned = null, Dictionary<int, int>? Faces = null);
+        Dictionary<int, int> Switches, List<int> Items, List<int[]> Chests, List<int>? Party = null, Dictionary<int, int[]>? Equipment = null, Dictionary<int, List<int>>? Evolutions = null, Dictionary<int, List<int>>? AdoraShare = null, List<CharDto>? Overrides = null, double PlayMs = 0, int[]? CartaPoints = null, Dictionary<int, int[]>? AffinityBonus = null, List<int>? Benched = null, Dictionary<int, List<int>>? Learned = null, Dictionary<int, int>? Faces = null, int Leader = 0);
 
     /// <summary>원본 세이브에서 읽은 캐릭터를 패치판 세이브에 남길 꼴.</summary>
     public sealed record CharDto(int Id, string Name, int Kind, int Tp, int Wtp, int Hp, int Str, int Def, int Int, int Dex, int Amd, int Face, int Singi,
@@ -69,7 +69,7 @@ internal static class SaveGame
     public static void Save(int field, Vector3 pos, float yaw, string place, int slot = 0)
     {
         var d = new Data(field, pos.X, pos.Y, pos.Z, yaw, place, DateTime.Now,
-            new(GameState.GlobalSwitches), [.. GameState.Items], GameState.OpenedChests.Select(c => new[] { c.Field, c.Id }).ToList(), [.. GameState.Party], new(GameState.Equipment), new(GameState.Evolutions), new(GameState.AdoraShare), GameState.Overrides.Values.Select(CharDto.From).ToList(), GameState.PlayMs, [.. GameState.CartaPoints], new(GameState.AffinityBonus), [.. GameState.Benched], new(GameState.Learned), new(GameState.FaceOverride));
+            new(GameState.GlobalSwitches), [.. GameState.Items], GameState.OpenedChests.Select(c => new[] { c.Field, c.Id }).ToList(), [.. GameState.Party], new(GameState.Equipment), new(GameState.Evolutions), new(GameState.AdoraShare), GameState.Overrides.Values.Select(CharDto.From).ToList(), GameState.PlayMs, [.. GameState.CartaPoints], new(GameState.AffinityBonus), [.. GameState.Benched], new(GameState.Learned), new(GameState.FaceOverride), GameState.Leader);
         Directory.CreateDirectory(Path.GetDirectoryName(PathOf(slot))!);
         File.WriteAllText(PathOf(slot), JsonSerializer.Serialize(d, new JsonSerializerOptions { WriteIndented = true }));
     }
@@ -86,7 +86,7 @@ internal static class SaveGame
             GameState.Items.Clear(); GameState.Items.AddRange(d.Items);
             GameState.OpenedChests.Clear();
             foreach (var c in d.Chests) GameState.OpenedChests.Add((c[0], c[1]));
-            GameState.Party.Clear(); GameState.Party.AddRange(d.Party is { Count: > 0 } p ? p : [0]);
+            GameState.Party.Clear(); GameState.Party.AddRange(d.Party is { Count: > 0 } p ? p : [0]); GameState.Leader = d.Leader;
             GameState.Equipment.Clear();
             foreach (var (k, v) in d.Equipment ?? []) GameState.Equipment[k] = v;
             GameState.Evolutions.Clear(); foreach (var (k, v) in d.Evolutions ?? []) GameState.Evolutions[k] = v;
@@ -110,7 +110,7 @@ internal static class SaveGame
         GameState.GlobalSwitches.Clear();
         GameState.Items.Clear();
         GameState.OpenedChests.Clear();
-        GameState.Party.Clear(); GameState.Party.Add(0);
+        GameState.Party.Clear(); GameState.Party.Add(0); GameState.Leader = 0;
         GameState.Equipment.Clear();
         GameState.Evolutions.Clear();
         GameState.AdoraShare.Clear();

@@ -92,7 +92,7 @@ internal static class OriginalSave
             GameState.Overrides[c.Id] = c;
             GameState.Equipment[c.Id] = equip;
         }
-        GameState.Party.Clear();
+        GameState.Party.Clear(); GameState.Leader = 0;
         for (int i = 0; i < Math.Clamp(partyCount, 0, 7); i++) if (party[i] >= 0) GameState.Party.Add(party[i]);
         if (GameState.Party.Count == 0) GameState.Party.Add(0);
         float yaw = dir.LengthSquared() > 1e-6f ? MathF.Atan2(dir.X, -dir.Y) : 0;

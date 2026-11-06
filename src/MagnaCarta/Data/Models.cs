@@ -46,6 +46,19 @@ internal sealed class CharacterMesh
     public List<FaceGroup> Groups = [];
     public Vector3[] BonePivots = [];
     public List<Sequence> Sequences = [];
+    /// <summary>
+    /// 옷자락·머리칼 물리(Asura.dll ASRDynamics1/2) — 3do 꼬리의 입자 묶음. 입자 = 메시 정점 하나(vtx 아래 16비트),
+    /// link 4칸 = 이웃 입자(용수철), x10 == 1 = 고정점(이웃 없음, 뼈를 따름). 묶음 끝 값(갈래 2 는 8칸, 1 은 4칸)은 뜻을 다 못 땀.
+    /// </summary>
+    public sealed class DynGroup
+    {
+        public int Kind;
+        public int[] Vertex = [];
+        public bool[] Anchor = [];
+        public int[][] Links = [];
+        public uint[] Params = [];
+    }
+    public List<DynGroup> Dynamics = [];
 
     public Sequence? FindSequence(int id) => Sequences.Find(s => s.Id == id && s.Keys.Length > 0);
 
@@ -139,14 +152,30 @@ internal sealed class CharacterMesh
         }
         if (r.End) return m;
 
-        // 옷자락·머리칼 흔들림 — 지금은 건너뛴다
+        // 옷자락·머리칼 흔들림(ASRDynamics) — 입자 36 바이트: pos f32×3 · link u16×4 · x0c i32 · x10 u16 · x12 u16 · w f32 · vtx u32
         int nd = kind == 0 ? r.I32() : 0;          // 갈래 1 은 이 칸이 없다
         for (int k = 0; k < Math.Max(nd, 0); k++)
         {
             uint dkind = r.U32();
-            int n = r.Count(36); r.Skip(n * 36);
+            int n = r.Count(36);
+            var g = new DynGroup { Kind = (int)dkind, Vertex = new int[n], Anchor = new bool[n], Links = new int[n][] };
+            for (int i = 0; i < n; i++)
+            {
+                r.Skip(12);
+                var l = new List<int>(4);
+                for (int j = 0; j < 4; j++) { int v = r.U16(); if (v != 0xFFFF && v < n) l.Add(v); }
+                g.Links[i] = [.. l];
+                r.Skip(4);
+                g.Anchor[i] = r.U16() == 1;
+                r.Skip(2 + 4);
+                g.Vertex[i] = (int)(r.U32() & 0xFFFF);
+            }
             int c = r.Count(4); r.Skip(c * 4);
-            r.Skip(12 + (dkind == 1 ? 16 : 32));
+            r.Skip(12);
+            int np = dkind == 1 ? 4 : 8;
+            g.Params = new uint[np];
+            for (int j = 0; j < np; j++) g.Params[j] = r.U32();
+            m.Dynamics.Add(g);
         }
         // 동작 목록
         r.Skip(16);                                   // "VERANIM" 꼬리표(이 판엔 안 씀)

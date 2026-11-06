@@ -16,6 +16,12 @@ internal static class Win32
     public const uint WM_KILLFOCUS = 0x0008, WM_SETICON = 0x0080;
     public const uint PM_REMOVE = 0x0001;
     public const int IDC_ARROW = 32512;
+    // 패치판 제목 줄(테두리 없는 창 + 직접 그린 제목 줄)
+    public const int WS_POPUP = unchecked((int)0x80000000), WS_MINIMIZEBOX = 0x00020000, WS_SYSMENU = 0x00080000;
+    public const uint WM_NCHITTEST = 0x0084;
+    public const int HTCLIENT = 1, HTCAPTION = 2, SW_MINIMIZE = 6;
+    public const uint SWP_NOZORDER = 0x0004, SWP_FRAMECHANGED = 0x0020, SWP_SHOWWINDOW = 0x0040;
+    public const uint SPI_GETWORKAREA = 0x0030;
 
     [StructLayout(LayoutKind.Sequential)] public struct Point { public int X, Y; }
 
@@ -71,6 +77,11 @@ internal static class Win32
     [DllImport("user32.dll")] public static extern void PostQuitMessage(int code);
     [DllImport("user32.dll")] public static extern IntPtr PostMessageW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] public static extern IntPtr SetCapture(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out Rect rect);
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int w, int h, uint flags);
+    [DllImport("user32.dll")] public static extern bool SystemParametersInfoW(uint action, uint param, out Rect rect, uint winIni);
+    [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+    [DllImport("user32.dll")] public static extern uint GetDpiForSystem();
     [DllImport("user32.dll")] public static extern bool ReleaseCapture();
 
     public static int LowWord(IntPtr l) => unchecked((short)(long)l);

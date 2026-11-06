@@ -42,7 +42,7 @@ internal sealed partial class FieldScene : IScene
     private Vector3 _lastEye;
 
     // 출구: E 구역(조건 304) → 사건 4/5 GOTO (분석-도시 §2)
-    private record Exit(int Region, int To, int EntryA, int EntryB, List<int[]>? Conds = null);
+    private record Exit(int Region, int To, int EntryA, int EntryB, List<int[]>? Conds = null, List<int[]>? Sets = null);
     private readonly List<Exit> _exits = [];
     private Exit? _leaving;
     // 무작위 조우 (분석-던전 §2): fld 0x10 단계 → 주기 P, P 틱이 차면 rand%(P/3)+1 틱 카운트다운, 0 이 되면 전투
@@ -76,6 +76,9 @@ internal sealed partial class FieldScene : IScene
         public int Seq => Loop ? 0 : Chest ? (Opened ? (Tick < 40 ? 1 : 2) : 0) : CharacterRenderer.Stand;
     }
     private readonly List<Npc> _npcs = [];
+    /// <summary>걷기로 바꿨는가(Shift 로 바꿈) — 기본은 달리기.</summary>
+    private static bool Walking;
+    private float _testNext;   // 시험 옮기기를 다시 할 수 있는 때(_since)
     private static int _routeStep;   // MC_TEST_ROUTE 「>」 꼴 진행(장면이 바뀌어도 이어짐)
     private readonly Dictionary<int, string> _lines;
     private readonly Overlay _ui;
@@ -133,11 +136,15 @@ internal sealed partial class FieldScene : IScene
         if (_field.Music2 >= 0) Audio.Music.Play2(_field.Music2); else Audio.Music.Stop2();   // 1번 채널 — fld 0xe8(0x52069306)
 
         FootSteps = LoadFootSteps(0);
-        var model = Amd.Load(0).GetValueOrDefault(0, 101);
+        _playerChar = PlayerCharFor(_field);
+        int model = 101;
+        if (_playerChar != 0 && Chars.Value.TryGetValue(_playerChar, out var pcp) && pcp.Amd >= 0 && McFiles.Exists("AmdData", pcp.Amd, "amd")
+            && Amd.Load(pcp.Amd).TryGetValue(0, out int pm) && McFiles.Exists("3DOBS", pm, "3do")) model = pm;
+        else { _playerChar = 0; model = Amd.Load(0).GetValueOrDefault(0, 101); }
         _calintz = new CharacterRenderer(gfx, CharacterMesh.Load(model));
 
         // fld B 묶음의 인물 번호는 CharData id (칼린츠 = 0) — 분석-캐릭터
-        var start = _field.Actors.Find(a => a.Character == 0)?.Position ?? _field.Objects.Find(o => o.Kind == 0)?.Position ?? Vector3.Zero;
+        var start = _field.Actors.Find(a => a.Character == _playerChar)?.Position ?? _field.Objects.Find(o => o.Kind == 0)?.Position ?? Vector3.Zero;
         _pos = start;
         if (entry is { } en && _field.Objects.Find(o => o.Kind == 0 && o.Id == en.A) is { } mark)
         {
@@ -153,7 +160,9 @@ internal sealed partial class FieldScene : IScene
             var conds = ev.Conditions.Where(c => c[0] is 100 or 101).ToList();
             foreach (var c in ev.Conditions.Where(c => c[0] == 304))
                 foreach (var a in ev.Actions.Where(a => a[0] is 4 or 5))
-                    _exits.Add(new Exit(c[2], a[1], a[0] == 5 ? a[2] : -1, a[0] == 5 ? a[3] : -1, conds));
+                    // GOTO 앞의 전역 스위치 쓰기(679 구역 2: 23 = 1 뒤 GOTO 124)도 나갈 때 적용
+                    _exits.Add(new Exit(c[2], a[1], a[0] == 5 ? a[2] : -1, a[0] == 5 ? a[3] : -1, conds,
+                        ev.Actions.TakeWhile(x => x[0] is not (4 or 5)).Where(x => x[0] is 102 or 103).ToList()));
         }
         _lines = Fpb.Load(_field.FpbNumber);
         // 소리 물체(갈래 0xB, 0x5206f242 가 단언): +0x28 word 가 켜짐 표시 — 600 이 1 로 둔다. 파일에서 이미 1 인 것은 들어오자마자 튼다
@@ -193,7 +202,7 @@ internal sealed partial class FieldScene : IScene
         if (autoSave && at == null) AutoSaveHere();
 
         var font = new BitmapFont(0);
-        const string help = "방향키/WASD 걷기   Shift 달리기   오른쪽 끌기 시점   휠 거리   I 상태   V 시점   F5 저장   Esc 메뉴   F12 버그 리포트";
+        const string help = "방향키/WASD 이동   Shift 걷기/달리기   오른쪽 끌기 시점   휠 거리   I 상태   V 시점   F5 저장   Esc 메뉴   F12 버그 리포트";
         var img = new Image32(840, font.Height + 6);
         img.Fill(0, 0, img.Width, img.Height, 0, 0, 0, 120);
         int end = font.Draw(img, 6, 3, help, 220, 205, 170);
@@ -268,6 +277,77 @@ internal sealed partial class FieldScene : IScene
     }
 
     private float _frameTicks;
+    /// <summary>캐릭터 빛 세기(지은 값) — 확인용 MC_LIGHT=a0,a1,d 로 바꿔 견줌.</summary>
+    private static readonly (float A0, float A1, float D) LightK =
+        Environment.GetEnvironmentVariable("MC_LIGHT") is { } ls && ls.Split(',') is [var x, var y, var z]
+            ? (float.Parse(x, System.Globalization.CultureInfo.InvariantCulture), float.Parse(y, System.Globalization.CultureInfo.InvariantCulture), float.Parse(z, System.Globalization.CultureInfo.InvariantCulture))
+            : (0.25f, 1.2f, 0.75f);   // 예전 (0.3, 1.5, 1) 은 어두운 장면(626·625)에서 얼굴이 하얗게 날아감 — 한 단계 낮춤(2026-11-06)
+
+    // ── F7 컷 조정 ──
+    private CameraCut? _cutRaw;      // 마지막에 튼 원본 컷(다듬기 전)
+    private bool _cutEdit, _cutPlay, _cutPreview, _cutPreviewDone;
+    private string _cutMsg = "";
+
+    private IScene CutEditor(float tk, Input input)
+    {
+        if (_cutRaw == null || _cut == null) { _cutEdit = false; return this; }
+        var tune = CutTuning.Get(_field.Number, _cutRaw.Id);
+        var before = tune;
+        float step = input.Down(Input.Shift) ? 1 : 10;
+        if (input.Pressed(Input.Left)) _cutTick = Math.Max(0, _cutTick - step);
+        if (input.Pressed(Input.Right)) _cutTick = Math.Min(_cut.Length, _cutTick + step);
+        if (input.Pressed(Input.Space)) _cutPlay = !_cutPlay;
+        if (input.Pressed(219)) tune = tune with { Speed = MathF.Max(0.1f, MathF.Round((tune.Speed - 0.1f) * 10) / 10) };   // [
+        if (input.Pressed(221)) tune = tune with { Speed = MathF.Min(4f, MathF.Round((tune.Speed + 0.1f) * 10) / 10) };    // ]
+        if (input.Pressed(189)) tune = tune with { Smooth = MathF.Max(0, MathF.Round((tune.Smooth - 0.1f) * 10) / 10) };   // -
+        if (input.Pressed(187)) tune = tune with { Smooth = MathF.Min(1, MathF.Round((tune.Smooth + 0.1f) * 10) / 10) };   // =
+        float fov0 = tune.Fov > 0 ? tune.Fov : _cutRaw.Keys.Length > 0 ? _cutRaw.Keys[0].Fov : 45;
+        if (input.Pressed(188)) tune = tune with { Fov = MathF.Max(10, fov0 - 1) };   // ,
+        if (input.Pressed(190)) tune = tune with { Fov = MathF.Min(120, fov0 + 1) };  // .
+        if (input.Pressed('R')) { tune = CutTuning.Tune.Default; _cutMsg = "원래대로"; }
+        if (tune != before) { CutTuning.Set(_field.Number, _cutRaw.Id, tune); _cut = CutTuning.Apply(_cutRaw, tune); }
+        if (input.Pressed('S')) _cutMsg = "저장: " + CutTuning.Save();
+        if (_cutPlay) { _cutTick += tk * tune.Speed; if (_cutTick >= _cut.Length) _cutTick = 0; }
+        return this;
+    }
+
+    private void DrawCutEditor()
+    {
+        if (!_cutEdit || _cutRaw == null || _cut == null) return;
+        var tune = CutTuning.Get(_field.Number, _cutRaw.Id);
+        int x = 8, y = 8, w = Math.Min(_ui.Width - 16, 330), h = 96;
+        _ui.Box(x - 1, y - 1, w + 2, h + 2, 169, 146, 109);
+        _ui.Box(x, y, w, h, 20, 18, 15, 235);
+        _ui.Text(x + 8, y + 6, $"컷 조정 (F7 닫기) - 필드 {_field.Number} 컷 {_cutRaw.Id}", 255, 220, 140);
+        _ui.Text(x + 8, y + 24, $"틀 {_cutTick:0}/{_cut.Length}  {(_cutPlay ? "재생" : "멈춤")}   속도 x{tune.Speed:0.0}  부드럽게 {tune.Smooth:0.0}  시야각 {(tune.Fov > 0 ? tune.Fov.ToString("0") : "원본")}");
+        _ui.Text(x + 8, y + 42, "방향키 좌우 넘기기(Shift 1틀)  Space 재생  [ ] 속도  - = 부드럽게");
+        _ui.Text(x + 8, y + 58, ", . 시야각  R 원래대로  S 저장", 235, 225, 200);
+        _ui.Bar(x + 8, y + 78, w - 16, 4, _cut.Length > 0 ? _cutTick / _cut.Length : 0, (230, 180, 90));
+        if (_cutMsg.Length > 0) _ui.Text(x, y + h + 6, _cutMsg, 200, 230, 160);
+    }
+    private Matrix4x4 _vp = Matrix4x4.Identity;
+
+    /// <summary>말 걸기·열기 안내 — NPC 머리 위에 말풍선으로(사용자 요청: 화면 아래 작은 글이 잘 안 보임). 화면 밖이면 아래 가운데.</summary>
+    private void TalkBubble(Npc n)
+    {
+        string s = n.Chest ? "Space 열기" : "Space 말 걸기";
+        int tw = _ui.TextWidth(s), bw = tw + 16, bh = 22;
+        int bx = _ui.Width / 2 - bw / 2, by = _ui.Height - 70;
+        float head = n.Chest ? 22 : 46;   // 사람 키 ≈ 40(발 투영과 견줘 잼)
+        var h = Vector4.Transform(new Vector4(n.Pos + new Vector3(0, 0, head * n.Scale), 1), _vp);
+        bool onScreen = false;
+        if (h.W > 1)
+        {
+            float sx = (h.X / h.W * 0.5f + 0.5f) * _ui.Width, sy = (0.5f - h.Y / h.W * 0.5f) * _ui.Height;
+            if (sx > 0 && sx < _ui.Width && sy > bh + 8 && sy < _ui.Height) { bx = (int)sx - bw / 2; by = (int)sy - bh - 8; onScreen = true; }
+        }
+        bx = Math.Clamp(bx, 2, Math.Max(2, _ui.Width - bw - 2));
+        _ui.Box(bx - 1, by - 1, bw + 2, bh + 2, 169, 146, 109);        // 테
+        _ui.Box(bx, by, bw, bh, 28, 25, 21, 235);
+        if (onScreen)                                                   // 꼬리(아래로 뾰족)
+            for (int k = 0; k < 6; k++) _ui.Box(bx + bw / 2 - 6 + k, by + bh + k, 12 - 2 * k, 1, 169, 146, 109);
+        _ui.Text(bx + 8, by + 4, s, 255, 230, 150);
+    }
 
     private static bool Compare(int v, int op, int k) => op switch
     {
@@ -277,6 +357,25 @@ internal sealed partial class FieldScene : IScene
     public IScene? Update(float seconds, Input input)
     {
         float tk = seconds * Timing.TicksPerSecond;
+        // F7 — 컷 조정 창(사건 카메라 컷의 속도·부드럽게·시야각, 사용자 요청). 떠 있는 동안 장면은 멈춘다
+        if (input.Pressed(0x76))
+        {
+            if (_cutEdit) { _cutEdit = false; if (_cutPreview) { _cut = null; _cutPreview = false; } }
+            else if (_cutRaw != null)
+            {
+                _cutEdit = true; _cutPlay = false;
+                if (_cut == null) { _cut = CutTuning.Apply(_cutRaw, CutTuning.Get(_field.Number, _cutRaw.Id)); _cutTick = 0; _cutPreview = true; }
+            }
+        }
+        // 개발도구 「게임에서 보기」: MC_CUT_PREVIEW=컷 이면 들어온 1초 뒤 그 컷을 틀고 F7 창을 재생 상태로 연다
+        if (!_cutPreviewDone && _since > 1f && int.TryParse(Environment.GetEnvironmentVariable("MC_CUT_PREVIEW"), out int pcut) && _field.Cuts.TryGetValue(pcut, out var pc))
+        {
+            _cutPreviewDone = true;
+            _cutRaw = pc; _cut = CutTuning.Apply(pc, CutTuning.Get(_field.Number, pc.Id)); _cutTick = 0;
+            _cutEdit = true; _cutPlay = true; _cutPreview = true;
+            _frame?.Dispose(); _frame = null;   // 626 처럼 처음에 띄운 2D 글 화면(518)이 컷을 덮지 않게
+        }
+        if (_cutEdit) return CutEditor(tk, input);
         _frameTicks = tk;
         GameState.PlayMs += seconds * 1000;
         _since += seconds; _titleTime -= seconds;
@@ -290,6 +389,12 @@ internal sealed partial class FieldScene : IScene
         if (_leaving != null)
         {
             _leaveTicks += tk;
+            if (_leaveTicks >= 20 && _leaving.Sets is { Count: > 0 } sets)
+                foreach (var s in sets)
+                {
+                    int cur = GameState.Switch(s[1]);
+                    GameState.SetSwitch(s[1], s[0] == 102 ? s[2] : s[2] switch { 0 => cur + s[3], 1 => cur - s[3], 2 => cur * s[3], 3 when s[3] != 0 => cur / s[3], _ => cur });
+                }
             return _leaveTicks >= 20 ? new FieldScene(_gfx, _screen, _leaving.To, _leaving.EntryA >= 0 ? (_leaving.EntryA, _leaving.EntryB) : null) : this;
         }
         foreach (var n in _npcs)
@@ -397,6 +502,14 @@ internal sealed partial class FieldScene : IScene
         // 시점
         if (input.RightDown)
         {
+            // 원본 감시 카메라에서 끌기 시작하면 — 지금 보던 쪽 그대로 패치판 따라가는 카메라로 넘겨 바로 돌린다(사용자 요청). V 로 원본에 돌아감
+            if (UsingCctv && Math.Abs(input.DragX) + Math.Abs(input.DragY) > 2)
+            {
+                _originalCamera = false;
+                var look = new Vector2(_pos.X - _lastEye.X, _pos.Y - _lastEye.Y);
+                if (look.LengthSquared() > 1) _camYaw = MathF.Atan2(look.X, -look.Y);
+                _camNow = _camDist;
+            }
             _camYaw -= input.DragX * 0.008f;
             _camPitch = Math.Clamp(_camPitch + input.DragY * 0.006f, 0.05f, 1.35f);
         }
@@ -414,11 +527,13 @@ internal sealed partial class FieldScene : IScene
         if (input.Down(Input.Right) || input.Down('D')) dir += right;
         if (input.Down(Input.Left) || input.Down('A')) dir -= right;
 
+        // Shift 는 달리기·걷기 바꾸기(사용자 요청 — 기본은 달리기). 장면이 바뀌어도 이어지게 정적
+        if (input.Pressed(Input.Shift)) Walking = !Walking;
         int motion = CharacterRenderer.Stand;
         if (dir.LengthSquared() > 0.01f)
         {
             dir = Vector2.Normalize(dir);
-            bool run = input.Down(Input.Shift);
+            bool run = !Walking;
             motion = run ? CharacterRenderer.Run : CharacterRenderer.Walk;
             float step = (run ? RunSpeed : WalkSpeed) * seconds * Timing.TicksPerSecond;
             TryMove(dir * step);
@@ -475,18 +590,32 @@ internal sealed partial class FieldScene : IScene
         if (Environment.GetEnvironmentVariable("MC_TEST_ROUTE") is { Length: > 0 } route)
         {
             var parts = route.Split(',');
+            // 들어선 자리가 이미 출구 안이라 저절로 넘어온 경우(618 → 620) 그 걸음이 안 쓰였다 — 지금 필드의 걸음이 바로 뒤(3걸음 안)에 있으면 건너뛴다
+            static int From(string s) => int.TryParse(s.Split('>', '@', ':')[0], out int f) ? f : -1;
+            if (_routeStep < parts.Length && From(parts[_routeStep]) != _field.Number)
+                for (int k = _routeStep + 1; k < Math.Min(parts.Length, _routeStep + 4); k++)
+                    if (From(parts[k]) == _field.Number) { _routeStep = k; break; }
             if (_routeStep < parts.Length && parts[_routeStep].Split('>') is [var rf0, var rt0] && int.TryParse(rf0, out int rfrom) && rfrom == _field.Number && int.TryParse(rt0, out int rto))
             {
                 tex = _exits.FindIndex(e => e.To == rto && (e.Conds == null || e.Conds.All(c => CondOk(c, _localSwitches))));
                 routeStep = tex >= 0;
             }
+            // 「필드@구역」 — 그 구역 가운데로(구역 안 사건: 725@1 → 사건 전투 0789)
+            if (_routeStep < parts.Length && parts[_routeStep].Split('@') is [var zf, var zr] && int.TryParse(zf, out int zfield) && zfield == _field.Number && int.TryParse(zr, out int zreg)
+                && _since > 1.2f && _since >= _testNext && _field.Regions.Find(rg => rg.Id == zreg) is { } zone)
+            {
+                _testNext = _since + 3; _routeStep++;   // 구역 사건이 끝나고 조작이 풀린 뒤 다음 걸음
+                _pos = zone.Quad is { Length: 4 } zq ? new Vector3((zq[0] + zq[1] + zq[2] + zq[3]) / 4, (zone.Min.Z + zone.Max.Z) / 2) : (zone.Min + zone.Max) / 2;
+            }
             foreach (var part in parts)
                 if (part.Split(':') is [var f, var k] && int.TryParse(f, out int rf) && rf == _field.Number && int.TryParse(k, out int rk)) tex = rk;
         }
         if (tex < 0 && int.TryParse(Environment.GetEnvironmentVariable("MC_TEST_EXIT"), out int te0)) tex = te0;
-        if (_since > 1.2f && _since - seconds <= 1.2f && tex >= 0 && tex < _exits.Count
+        // 1.2초가 지난 뒤 조작이 풀린 첫 틀에 한 번(사건 전환이 그 틀을 잡고 있으면 건너뛰던 것 — 120 → 594 GOTO 뒤)
+        if (_since > 1.2f && _since >= _testNext && tex >= 0 && tex < _exits.Count
             && _field.Regions.Find(rg => rg.Id == _exits[tex].Region) is { } trg)
         {
+            _testNext = float.MaxValue;
             if (routeStep) _routeStep++;
             _pos = trg.Quad is { Length: 4 } q4 ? new Vector3((q4[0] + q4[1] + q4[2] + q4[3]) / 4, (trg.Min.Z + trg.Max.Z) / 2) : (trg.Min + trg.Max) / 2;
         }
@@ -577,6 +706,11 @@ internal sealed partial class FieldScene : IScene
     {
         _gfx.Begin(new Vortice.Mathematics.Color4(_field.ClearColor.X, _field.ClearColor.Y, _field.ClearColor.Z, 1));   // 필드마다 바탕색(fld 0x40c)
         var target = _pos + new Vector3(0, 0, 32);
+        // 사건 508: 보는 점을 그 배우로 천천히 옮긴다(원본 0x52053a49 에 10틀 · 1.0 · 0.1 을 넘김 — 천천히 도는 것으로 읽음)
+        var lookAt = _camLook == 10000 || IsPlayer(_camLook) ? _pos : _camLook >= 10000 ? TargetPos(_camLook - 10000) : null;
+        if (lookAt is { } la) _camLookPos = _camLookPos is { } cur ? Vector3.Lerp(cur, la, 0.12f) : Vector3.Lerp(_pos, la, 0.12f);
+        else if (_camLookPos is { } cur2) _camLookPos = Vector3.Distance(cur2, _pos) < 2 ? null : Vector3.Lerp(cur2, _pos, 0.12f);
+        if (_camLookPos is { } lp) target = lp + new Vector3(0, 0, 32);
         var back = new Vector3(-MathF.Sin(_camYaw), MathF.Cos(_camYaw), 0);   // 앞의 반대
         var arm = back * MathF.Cos(_camPitch) + Vector3.UnitZ * MathF.Sin(_camPitch);
         // 나무·벽이 사이에 끼면 카메라를 앞으로 당긴다 (원본 필드 카메라는 못 땄다 — 지은 동작)
@@ -596,8 +730,16 @@ internal sealed partial class FieldScene : IScene
             view = Matrix4x4.CreateLookAt(ce, ce + cf, cu);
             if (cfov is > 5 and < 170) fov = cfov * MathF.PI / 180;
         }
-        var proj = Matrix4x4.CreatePerspectiveFieldOfView(fov, _gfx.Width / (float)Math.Max(_gfx.Height, 1),
-            Math.Max(_field.Near, 5f), Math.Max(_field.Far, 5000f));
+        // 근평면·원평면: 컷이 돌면 컷 키의 값(626 컷 5 는 5 — 필드 값 10 을 쓰면 눈에서 8 단위 떨어진 클로즈업에서
+        // 얼굴 앞면이 잘려 뒤의 눈알이 튀어나온 듯 보였다), 아니면 필드 값(fld 0x41c)
+        float zNear = Math.Max(_field.Near, 5f), zFar = Math.Max(_field.Far, 5000f);
+        if (_cut is { Keys.Length: > 0 } ck && ck.Keys[0].Near > 0.1f)
+        {
+            zNear = ck.Keys[0].Near;
+            if (ck.Keys[0].Far > zNear * 10) zFar = ck.Keys[0].Far;
+        }
+        var proj = Matrix4x4.CreatePerspectiveFieldOfView(fov, _gfx.Width / (float)Math.Max(_gfx.Height, 1), zNear, zFar);
+        _vp = view * proj;
 
         var amb = new Vector3(_field.Ambient.X, _field.Ambient.Y, _field.Ambient.Z);
         var c = new Constants
@@ -606,8 +748,8 @@ internal sealed partial class FieldScene : IScene
             World = Matrix4x4.Identity,
             Tint = Vector4.One,
             LightDir = new Vector4(Vector3.Normalize(new Vector3(0.4f, 0.6f, -1f)), 0),
-            LightColor = new Vector4(0.9f, 0.8f, 0.6f, 1),
-            Ambient = new Vector4(amb * 1.5f + new Vector3(0.3f), 1),
+            LightColor = new Vector4(new Vector3(0.9f, 0.8f, 0.6f) * LightK.D, 1),
+            Ambient = new Vector4(amb * LightK.A1 + new Vector3(LightK.A0), 1),
             Fog = new Vector4(2500, 9000, 0, 0),
             FogColor = _fogColor,
             CameraPos = new Vector4(eye, 1),
@@ -673,11 +815,13 @@ internal sealed partial class FieldScene : IScene
                 BlendScaled(_ui.Image, fr.Img, ox + P(600 + fr.X), boxTop + P(65 + fr.Y), Math.Max(1, P(fr.Img.Width)), Math.Max(1, P(fr.Img.Height)), 0, 0, fr.Img.Width, fr.Img.Height);
             }
         }
-        else if (!_locked && _npcs.Any(n => !n.Loop && !(n.Chest && n.Opened) && Vector2.Distance(new(n.Pos.X, n.Pos.Y), new(_pos.X, _pos.Y)) < 70f))
-            _ui.Text(_ui.Width / 2 - 40, _ui.Height - 60, _npcs.Where(n => !n.Loop && !(n.Chest && n.Opened) && Vector2.Distance(new(n.Pos.X, n.Pos.Y), new(_pos.X, _pos.Y)) < 70f).MinBy(n => Vector2.Distance(new(n.Pos.X, n.Pos.Y), new(_pos.X, _pos.Y)))!.Chest ? "Space 열기" : "Space 말 걸기", 255, 230, 150);
+        else if (!_locked && _npcs.Where(n => !n.Loop && !(n.Chest && n.Opened) && Vector2.Distance(new(n.Pos.X, n.Pos.Y), new(_pos.X, _pos.Y)) < 70f)
+                     .MinBy(n => Vector2.Distance(new(n.Pos.X, n.Pos.Y), new(_pos.X, _pos.Y))) is { } near)
+            TalkBubble(near);
         if (_status && _statusTab == 4) DrawStatus();
         if (!_status && !_sysMenu && !_slotPick && !_audioWin && _frame == null && _running == null) DrawCompass();   // 사건 중엔 숨김(0x52070fa1)
         DrawChoice();
+        DrawCutEditor();
         if (_status && _statusTab is 0 or 1 or 2 or 3) { _ui.Present(); DrawOriginalStatus(); goto fade; }
         if (_sysMenu) { _ui.Present(); DrawSystemMenu(); goto fade; }
         if (_slotPick) { _ui.Present(); DrawSlotPicker(); goto fade; }

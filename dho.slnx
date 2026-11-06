@@ -4,5 +4,6 @@
     <Project Path="src/Dho.Tools/Dho.Tools.csproj" />
     <Project Path="src/Dho/Dho.csproj" />
     <Project Path="src/MagnaCarta/MagnaCarta.csproj" />
+    <Project Path="src/MagnaCarta.Editor/MagnaCarta.Editor.csproj" />
   </Folder>
 </Solution>

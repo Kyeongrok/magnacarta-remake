@@ -21,6 +21,9 @@ internal sealed class GameWindow : IDisposable
     private readonly bool _test;
     private float _scriptWait;
     private readonly List<(int Vk, float Left)> _held = [];
+    /// <summary>패치판 제목 줄(☰ · 설정 · 해상도) — 시험(--script)에는 안 붙인다(화면 찍기 좌표가 그대로이게).</summary>
+    private readonly WindowChrome? _chrome;
+    private bool _toTitle;
 
     public GameWindow(string? script, bool battle = false, int field = -1)
     {
@@ -41,12 +44,23 @@ internal sealed class GameWindow : IDisposable
             ClassName = ClassName,
         };
         Win32.RegisterClassExW(ref wc);
+        bool chrome = !_test || Environment.GetEnvironmentVariable("MC_TEST_CHROME") is { Length: > 0 };   // 확인용: 시험에도 제목 줄
+        var setting = WindowChrome.LoadSetting();
         var rect = new Win32.Rect { Right = 1200, Bottom = 900 };
-        Win32.AdjustWindowRect(ref rect, Win32.WS_OVERLAPPEDWINDOW, false);
+        int style = Win32.WS_OVERLAPPEDWINDOW;
+        if (chrome)
+        {
+            // 테두리 없는 창 — 제목 줄은 패치판이 그린다. 고른 해상도가 작업 영역보다 크면 들어가는 데까지
+            style = Win32.WS_POPUP | Win32.WS_MINIMIZEBOX | Win32.WS_SYSMENU;
+            var fit = WindowChrome.FittingSizes().ToList();
+            var (gw, gh) = fit.Contains((setting.W, setting.H)) ? (setting.W, setting.H) : fit.Count > 0 ? fit.LastOrDefault(s => s.W <= setting.W) is { W: > 0 } f ? f : fit[0] : (1200, 900);
+            rect = new Win32.Rect { Right = gw, Bottom = gh + WindowChrome.Height };
+        }
+        else Win32.AdjustWindowRect(ref rect, Win32.WS_OVERLAPPEDWINDOW, false);
         // 시험(--script)은 뒤에서 — 창을 화면 밖에 띄우고 포커스를 뺏지 않으며 작업 표시줄에도 안 보인다(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW).
         // 대본 입력은 창 메시지가 아니라 직접 넣으므로 포커스가 없어도 된다. 보면서 확인하려면 MC_SHOW_WINDOW=1
         bool background = _test && Environment.GetEnvironmentVariable("MC_SHOW_WINDOW") is not { Length: > 0 };
-        _hwnd = Win32.CreateWindowExW(background ? 0x08000000 | 0x00000080 : 0, ClassName, "마그나카르타 — 패치판", Win32.WS_OVERLAPPEDWINDOW | Win32.WS_VISIBLE,
+        _hwnd = Win32.CreateWindowExW(background ? 0x08000000 | 0x00000080 : 0, ClassName, "마그나카르타 — 패치판", style | Win32.WS_VISIBLE,
             background ? -20000 : Win32.CW_USEDEFAULT, background ? -20000 : Win32.CW_USEDEFAULT, rect.Width, rect.Height, IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
         var ico = Path.Combine(Data.McFiles.Dir, "mc.ico");
         if (File.Exists(ico))
@@ -55,8 +69,13 @@ internal sealed class GameWindow : IDisposable
             if (h != IntPtr.Zero) { Win32.SendMessageW(_hwnd, Win32.WM_SETICON, 0, h); Win32.SendMessageW(_hwnd, Win32.WM_SETICON, 1, h); }
         }
         Win32.GetClientRect(_hwnd, out var client);
-        _gfx = new Gfx(_hwnd, client.Width, client.Height);
+        _gfx = new Gfx(_hwnd, client.Width, client.Height, chrome ? WindowChrome.Height : 0);
         _screen = new ScreenImage(_gfx);
+        if (chrome)
+        {
+            _chrome = new WindowChrome(_hwnd, _gfx, _screen) { BackToTitle = () => _toTitle = true };
+            if (!_test) _chrome.Apply(rect.Width, rect.Height - WindowChrome.Height, setting.Full, save: false);   // 작업 영역 가운데로(전체 화면이면 화면 전체)
+        }
         // 확인용: --field 로 바로 들어갈 때 MC_TEST_PARTY=0,1,2 면 파티를 그렇게(조우 전투 이기기 확인용)
         // 확인용: MC_TEST_SWITCH=124=1,125=0 — 전역 스위치를 미리 켠다
         if (field >= 0 && Environment.GetEnvironmentVariable("MC_TEST_SWITCH") is { Length: > 0 } tsw)
@@ -90,7 +109,11 @@ internal sealed class GameWindow : IDisposable
             string? shot = RunScript(dt);
             // F12 — 어느 화면에서나 버그 리포트(대시보드 「마그나카르타」 탭으로 간다)
             if (_input.Pressed(0x7B)) { Scenes.BugReport.Open(_hwnd, Describe(_scene), _gfx.Width, _gfx.Height, _test); last = clock.Elapsed.TotalSeconds; }
-            var next = _scene.Update(dt, _input);
+            // 차림·설정이 떠 있으면 게임은 멈춘다(Esc 는 그것을 닫는다)
+            IScene? next = _scene;
+            if (_chrome is { Blocking: true }) { if (_input.Pressed(Input.Escape)) _chrome.Escape(); }
+            else next = _scene.Update(dt, _input);
+            if (_toTitle) { _toTitle = false; Audio.Music.Stop(); Audio.Music.Stop2(); next = new TitleScene(_gfx, _screen); }
             _input.EndFrame();
             if (next != _scene)
             {
@@ -102,6 +125,7 @@ internal sealed class GameWindow : IDisposable
                 if (_scene == null) break;
             }
             _scene.Draw();
+            _chrome?.Draw();
             if (shot != null) _gfx.Capture(shot);
             _gfx.Present();
         }
@@ -140,7 +164,10 @@ internal sealed class GameWindow : IDisposable
                 case "undrag": _input.RightDown = false; break;
                 // 마우스(창 안 화소): mouse:x:y 로 옮기고 ldown/lup 으로 왼쪽 단추
                 case "mouse": _input.MouseX = int.Parse(parts[1]); _input.MouseY = int.Parse(parts[2]); break;
-                case "ldown": _input.LeftClicked = true; _input.LeftDown = true; break;
+                case "ldown":
+                    if (_chrome != null && _chrome.Click(_input.MouseX, _input.MouseY + _gfx.Top)) break;   // 제목 줄·차림·설정(창 안쪽 좌표)
+                    _input.LeftClicked = true; _input.LeftDown = true; break;
+                case "cmouse": _chrome?.MouseMove(int.Parse(parts[1]), int.Parse(parts[2])); _input.MouseX = int.Parse(parts[1]); _input.MouseY = int.Parse(parts[2]) - _gfx.Top; break;
                 case "lup": _input.LeftDown = false; break;
                 case "shot": return string.Join(':', parts[1..]);
                 case "quit": _running = false; return null;
@@ -177,14 +204,23 @@ internal sealed class GameWindow : IDisposable
                 _input.KeyDown((int)wParam);
                 return IntPtr.Zero;
             case Win32.WM_KEYUP or Win32.WM_SYSKEYUP: _input.KeyUp((int)wParam); return IntPtr.Zero;
+            case Win32.WM_NCHITTEST when _chrome != null && _gfx != null:
+            {
+                Win32.GetWindowRect(hWnd, out var wr);
+                int sx = Win32.LowWord(lParam), sy = Win32.HighWord(lParam);
+                return _chrome.HitTest(sx - wr.Left, sy - wr.Top);
+            }
             case Win32.WM_MOUSEMOVE:
             {
                 int x = Win32.LowWord(lParam), y = Win32.HighWord(lParam);
+                _chrome?.MouseMove(x, y);
+                y -= _gfx?.Top ?? 0;   // 게임 화면 좌표
                 if (_input.RightDown) { _input.DragX += x - _lastX; _input.DragY += y - _lastY; }
                 _lastX = x; _lastY = y;
                 _input.MouseX = x; _input.MouseY = y;
                 return IntPtr.Zero;
             }
+            case Win32.WM_LBUTTONDOWN when _chrome != null && _chrome.Click(Win32.LowWord(lParam), Win32.HighWord(lParam)): return IntPtr.Zero;
             case Win32.WM_LBUTTONDOWN: _input.LeftClicked = true; _input.LeftDown = true; Win32.SetCapture(hWnd); return IntPtr.Zero;
             case Win32.WM_LBUTTONUP: _input.LeftDown = false; if (!_input.RightDown) Win32.ReleaseCapture(); return IntPtr.Zero;
             case Win32.WM_RBUTTONDOWN: _input.RightDown = true; Win32.SetCapture(hWnd); return IntPtr.Zero;
@@ -207,6 +243,7 @@ internal sealed class GameWindow : IDisposable
     {
         Audio.Music.Stop(); Audio.Music.Stop2();
         _scene?.Dispose();
+        _chrome?.Dispose();
         _screen.Dispose();
         _gfx.Dispose();
     }

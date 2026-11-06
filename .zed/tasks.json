@@ -1,0 +1,54 @@
+// Zed 작업 — 명령 팔레트(Ctrl+Shift+P) → "task: spawn" 또는 Alt+Shift+T 로 고른다.
+[
+  {
+    "label": "마그나카르타: 빌드하고 실행",
+    "command": "dotnet run --project src/MagnaCarta",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "always"
+  },
+  {
+    "label": "마그나카르타: 실행 (빌드 없이)",
+    "command": "dotnet run --project src/MagnaCarta --no-build",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "never"
+  },
+  {
+    "label": "마그나카르타: 개발도구 (컷씬 카메라 등)",
+    "command": "dotnet run --project src/MagnaCarta.Editor",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "never"
+  },
+  {
+    "label": "마그나카르타: 빌드",
+    "command": "dotnet build src/MagnaCarta -c Debug",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always"
+  },
+  {
+    "label": "마그나카르타: 물리 끄고 실행 (MC_NO_DYN)",
+    "command": "dotnet run --project src/MagnaCarta --no-build",
+    "env": { "MC_NO_DYN": "1" },
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "never"
+  },
+  {
+    "label": "마그나카르타: 필드 바로 들어가기 (예: 594)",
+    "command": "dotnet run --project src/MagnaCarta --no-build -- --field 594",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "never"
+  },
+  {
+    "label": "마그나카르타: 시험 전투",
+    "command": "dotnet run --project src/MagnaCarta --no-build -- --battle",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "never"
+  },
+  {
+    "label": "마그나카르타: 이야기 길 짚기 (storypath auto)",
+    "command": "python -X utf8 tools/mc/storypath.py auto",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "reveal": "always"
+  }
+]

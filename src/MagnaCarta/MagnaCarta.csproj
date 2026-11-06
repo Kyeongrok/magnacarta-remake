@@ -16,6 +16,11 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <!-- 개발도구(src/MagnaCarta.Editor)가 자료 읽개(Field·CameraCut·CutTuning)를 같이 쓴다 -->
+        <InternalsVisibleTo Include="MagnaCarta.Editor" />
+    </ItemGroup>
+
+    <ItemGroup>
         <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
         <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
     </ItemGroup>

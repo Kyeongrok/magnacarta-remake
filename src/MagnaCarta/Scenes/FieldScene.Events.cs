@@ -45,13 +45,16 @@ internal sealed partial class FieldScene
     private Vector3? TargetPos(int id)
     {
         if (_field.Actors.Find(x => x.Id == id) is { } act)
-            return act.Character == 0 && _field.Actors.FindIndex(x => x.Character == 0) == _field.Actors.IndexOf(act) ? _pos
+            return act.Character == _playerChar && _field.Actors.FindIndex(x => x.Character == _playerChar) == _field.Actors.IndexOf(act) ? _pos
                  : _cast.Find(c => c.Id == id)?.Pos ?? act.Position;
         return _field.Objects.Find(o => o.Id == id)?.Position;
     }
     private int _scriptMotionNext = -1;
     private CameraCut? _cut;
     private float _cutTick;
+    /// <summary>사건 508 카메라 캐릭터 보기 — 따라가는 카메라의 보는 점을 이 배우로(0x52079f31: a0 배우, a1 0 = 한 번 돌려 봄 · 1 = 계속 봄). 504 · 8 · 필드 떠나기에서 푼다.</summary>
+    private int _camLook = -1;
+    private Vector3? _camLookPos;
 
     // 사건 대사(700): 얼굴, 목소리, 수명(틀), 틀마다 5px 드러남
     private Image32? _face;
@@ -69,7 +72,7 @@ internal sealed partial class FieldScene
     };
 
     private bool IsPlayer(int actor) =>
-        actor == 10000 || actor >= 10000 && _field.Actors.Find(a => a.Id == actor - 10000) is { Character: 0 };
+        actor == 10000 || actor >= 10000 && _field.Actors.Find(a => a.Id == actor - 10000) is { } pa && pa.Character == _playerChar;
 
     /// <summary>한 틀 돌린다. GOTO 면 다음 장면을 돌려준다.</summary>
     private IScene? RunEvents(float tk, Input input)
@@ -78,17 +81,37 @@ internal sealed partial class FieldScene
         if (_scriptDialog && _dialog != null)
         {
             _dialogAge += tk;
-            bool shown = _dialogAge * 5 >= _ui.TextWidth(_dialog.Replace("\n", "")) * 1.0f;
-            if (_dialogAge >= _dialogLife || shown && (input.Pressed(Input.Space) || input.LeftClicked || input.Pressed(Input.Enter)))
+            float full = _ui.TextWidth(_dialog.Replace("\n", "")) / 5f;   // 다 찍히는 틱
+            bool shown = _dialogAge >= full;
+            bool press = input.Pressed(Input.Space) || input.LeftClicked || input.Pressed(Input.Enter);
+            // 찍히는 중에 누르면 한꺼번에 다 보이고(사용자 요청 — 클릭하면 빨리), 다 보인 뒤 누르면 넘긴다
+            if (press && !shown) _dialogAge = full;
+            else if (_dialogAge >= _dialogLife || shown && press)
             { _dialog = null; _scriptDialog = false; _face = null; Audio.Music.StopVoice(); }
         }
         if (_running == null)
         {
             // 조건 0 「늘」은 다른 사건이 하나도 안 맞을 때만(분석-스토리) — 그래서 두 번 훑는다
+            // 구역(304) 사건 중 GOTO 가 없는 것(전투 9 · 스위치 · 대사 — 725 구역 1 → 0789, 690 → 25 += 1, 727 숲 24)은
+            // 플레이어가 그 구역에 들어설 때(밖 → 안) 돌린다. GOTO 가 든 것은 출구로 따로(FieldScene 출구)
+            if (_since > 1f)
+                foreach (var ev in _field.Events)
+                {
+                    if (!ev.Conditions.Any(c => c[0] == 304) || ev.Actions.Any(a => a[0] is 4 or 5)) continue;
+                    bool inside = ev.Conditions.Where(c => c[0] == 304).All(c => _field.Regions.Find(rg => rg.Id == c[2]) is { } rg && rg.Contains(_pos));
+                    bool was = _zoneInside.Contains(ev);
+                    if (inside) _zoneInside.Add(ev); else _zoneInside.Remove(ev);
+                    if (!inside || was || _running != null) continue;
+                    if (!ev.Conditions.Where(c => c[0] != 304).All(c => CondOk(c, _localSwitches))) continue;
+                    int zr = _runs.GetValueOrDefault(ev);
+                    if (ev.Trigger != 0 && zr >= ev.Trigger) continue;
+                    _runs[ev] = zr + 1;
+                    _running = ev; _pc = 0; _wait = 0;
+                }
             for (int pass = 0; pass < 2 && _running == null; pass++)
                 foreach (var ev in _field.Events)
                 {
-                    if (ev.Conditions.Any(c => c[0] == 304)) continue;                 // 구역 사건(출구 등)은 따로
+                    if (ev.Conditions.Any(c => c[0] == 304)) continue;                 // 구역 사건은 위(GOTO 없는 것)와 출구로
                     if (ev.Actions.All(a => a[0] == 0)) continue;                       // CALL 묶음
                     bool always = ev.Conditions.Count == 0 || ev.Conditions.All(c => c[0] == 0);
                     if (always != (pass == 1)) continue;
@@ -125,7 +148,7 @@ internal sealed partial class FieldScene
         if (_scriptMotionNext >= 0 && _calintz.SequenceTicks(_motion) is int len && len > 0 && _motionTick >= len)
         { _motion = _scriptMotionNext; _motionTick = 0; _scriptMotionNext = -1; }
 
-        if (_cut != null) _cutTick += tk;
+        if (_cut != null) _cutTick += tk * CutTuning.Get(_field.Number, _cut.Id).Speed;   // F7 컷 조정의 속도
         if (_choice is { } ch)
         {
             if (input.Pressed(Input.Left) || input.Pressed(Input.Up)) _choiceIndex = 0;
@@ -162,7 +185,7 @@ internal sealed partial class FieldScene
                 // 16 — 시작 화면으로(0x5207f67f: 0x5206e36e 뒤 장면 0x33 = 시스템 메뉴 「Back to the Title」 과 같은 길). 348 에서 한 번(끝 장면으로 보임)
                 case 16: _pc++; _running = null; return new TitleScene(_gfx, _screen);
                 case 7: _locked = true; break;
-                case 8: _locked = false; break;
+                case 8: _locked = false; _camLook = -1; break;
                 case 100: _localSwitches[a[1]] = a[2]; break;
                 case 102: GameState.SetSwitch(a[1], a[2]); break;
                 // 103 [전역 스위치, 셈, 값] — 셈 0 더하기 · 1 빼기 · 2 곱하기 · 3 나누기(0x5207a9ba, 점프표 0x5207aad7). 690·691 의 「103 [25, 0, 1]」 = 스위치 25 에 1 더하기
@@ -311,7 +334,8 @@ internal sealed partial class FieldScene
                 // 304 [3D 루프 물체, 목표 물체, ?, 틀 수] — 루프 물체(MCOID_VOBS3LOOPOBJ)를 목표 물체 자리로 틀 수에 걸쳐 옮김(0x520731bf, 「nFrame > 0」). 676 에서만 쓰임
                 case 304 when _npcs.Find(n => n.O.Id == a[1]) is { } mv && _field.Objects.Find(o => o.Id == a[2]) is { } goal304:
                     mv.MoveFrom = mv.Pos; mv.MoveTo = goal304.Position; mv.MoveT = 0; mv.MoveDur = Math.Max(1, a[4]); break;
-                case 804: GameState.Join(a[1]); break;    // 파티 넣기 a0 = CharData id (0x5207f255)
+                case 804: GameState.Join(a[1]); break;
+                case 809 when GameState.Party.Contains(a[1]): GameState.Leader = a[1]; break;   // 조작 캐릭터 바꾸기 — 다음 필드부터 그 인물로    // 파티 넣기 a0 = CharData id (0x5207f255)
                 case 805: GameState.Leave(a[1]); break;   // 빼기 (0x5207f3c7)
                 case 810: GameState.Learn(a[1], a[2]); break;
                 // 800 [캐릭터, 칸, 값] — 캐릭터 값 한 칸 바꾸기(0x5207e8f5, 점프표 0x5207ea55): 칸 0~12 = +0x6d·+0x6e·+0x70~+0x8c·+0x9c(몸 amd)·+0xaa·+0xbe, 13 = +0x9e 대화 얼굴. 자료엔 346 의 [3, 13, 293] 하나뿐 → 얼굴만 다룸
@@ -320,9 +344,10 @@ internal sealed partial class FieldScene
                 case 601: Audio.SoundEffects.StopLoop($"amb{a[1]}"); break;
                 case 602 or 603: Audio.SoundEffects.Play(a[1]); break;   // a0 = SED 번호
                 case 500:
-                    if (_field.Cuts.TryGetValue(a[1], out var cut)) { _cut = cut; _cutTick = 0; }
+                    if (_field.Cuts.TryGetValue(a[1], out var cut)) { _cutRaw = cut; _cut = CutTuning.Apply(cut, CutTuning.Get(_field.Number, cut.Id)); _cutTick = 0; }
                     break;
-                case 501 or 504: _cut = null; break;     // 따라가기 · 되돌리기 → 패치판 따라가는 카메라
+                case 501 or 504: _cut = null; if (a[0] == 504) _camLook = -1; break;     // 따라가기 · 되돌리기 → 패치판 따라가는 카메라
+                case 508: _camLook = a[1]; break;     // 카메라 캐릭터 보기 a0 = 배우
                 case 700 or 704: Say(a); break;
                 case 701:
                     if (_lines.TryGetValue(a[1], out var place)) ShowTitle(place);
@@ -399,7 +424,7 @@ internal sealed partial class FieldScene
         if (foes.Count == 0) return null;
         var gfx = _gfx; var screen = _screen;
         GameState.LastBattleWon = null;
-        return new BattleScene(gfx, screen, new BattleScene.Setup(bf.MapNumber, -1, [.. GameState.Party], 0, bf.Music, null)
+        return new BattleScene(gfx, screen, new BattleScene.Setup(bf.MapNumber, -1, GameState.BattleMembers(), 0, bf.Music, null)   // 자리 없는 사건 전투도 출전 넷(세이브 +0x4e 전투칸 4 — 분석-세이브)
         {
             Allies = allies.Count > 0 ? allies : null,
             Foes = foes,
@@ -470,13 +495,23 @@ internal sealed partial class FieldScene
     }
     private readonly List<Cast> _cast = [];
 
+    /// <summary>이 필드의 조작 캐릭터: 칼린츠(0)가 서 있으면 칼린츠, 없으면 809 로 정한 인물이 서 있을 때 그 인물.
+    /// (원본은 파티 +0x64 차례 하나 — 불러오기에서 그 값을 아직 안 남기므로 서 있는 인물로 고른다.)</summary>
+    private readonly int _playerChar;
+
+    private static int PlayerCharFor(Field f)
+    {
+        if (f.Actors.Count == 0 || f.Actors.Exists(a => a.Character == 0)) return 0;
+        return GameState.Leader != 0 && f.Actors.Exists(a => a.Character == GameState.Leader) ? GameState.Leader : 0;
+    }
+
     private void LoadCast()
     {
         var meshes = new Dictionary<int, CharacterMesh>();
         bool playerTaken = false;
         foreach (var a in _field.Actors)
         {
-            if (a.Character == 0 && !playerTaken) { playerTaken = true; continue; }   // 첫 칼린츠 = 조작 캐릭터
+            if (a.Character == _playerChar && !playerTaken) { playerTaken = true; continue; }   // 첫 조작 캐릭터(보통 칼린츠) = 플레이어
             if (!Chars.Value.TryGetValue(a.Character, out var cp) || cp.Amd < 0 || !McFiles.Exists("AmdData", cp.Amd, "amd")) continue;
             try
             {
@@ -490,6 +525,8 @@ internal sealed partial class FieldScene
             catch (Exception e) when (e is NotSupportedException or InvalidDataException or KeyNotFoundException) { }
         }
     }
+
+    private readonly HashSet<FieldEvent> _zoneInside = [];
 
     private Cast? CastOf(int actor) => actor >= 10000 ? _cast.Find(c => c.Id == actor - 10000) : null;
 

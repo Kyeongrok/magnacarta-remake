@@ -226,7 +226,105 @@ internal sealed class CharacterRenderer : IDisposable
             _skinned[i].Pos = v;
             _skinned[i].Normal = nn;
         }
+        StepDynamics();
         _gfx.Upload<CharVertex>(_vb, _skinned);
+    }
+
+    // ── 옷자락·머리칼 물리(ASRDynamics 를 따라 지은 Verlet — 원본 힘 식은 아직 못 땀) ──
+    private sealed class DynState
+    {
+        public required CharacterMesh.DynGroup G;
+        public Vector3[] X = [], Prev = [];
+        public float[][] Rest = [];
+        public int[][] Copies = [];   // 입자마다 같은 자리 메시 정점들(UV 이음매로 겹친 것)
+        public bool Ready;
+    }
+    private DynState[]? _dyn;
+    private long _dynLast;
+    private Matrix4x4? _worldLast, _worldPrev;
+    private static readonly bool NoDynamics = Environment.GetEnvironmentVariable("MC_NO_DYN") is { Length: > 0 };
+
+    private void StepDynamics()
+    {
+        if (NoDynamics || _mesh.Dynamics.Count == 0) return;
+        if (_dyn == null)
+        {
+            var p = _mesh.Positions;
+            _dyn = _mesh.Dynamics.Select(g =>
+            {
+                var copies = new int[g.Vertex.Length][];
+                for (int i = 0; i < g.Vertex.Length; i++)
+                {
+                    int v = Math.Min(g.Vertex[i], p.Length - 1);
+                    var list = new List<int>();
+                    for (int j = 0; j < p.Length; j++)
+                        if (_mesh.Bone0[j] == _mesh.Bone0[v] && Vector3.DistanceSquared(p[j], p[v]) < 1e-6f) list.Add(j);
+                    copies[i] = [.. list];
+                }
+                return new DynState { G = g, Copies = copies };
+            }).ToArray();
+        }
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        float dt = _dynLast == 0 ? 0 : (float)((now - _dynLast) / (double)System.Diagnostics.Stopwatch.Frequency);
+        _dynLast = now;
+        bool reset = dt <= 0 || dt > 0.3f;   // 처음이거나 오래 안 그렸으면 쉬는 꼴에서 다시
+        dt = Math.Min(dt, 1 / 30f);
+        const float Gravity = 260f, Damping = 0.08f;   // 모델 단위(키 ≈ 50)·초 — 지은 값
+        foreach (var d in _dyn)
+        {
+            var g = d.G;
+            int n = g.Vertex.Length;
+            if (!d.Ready || reset)
+            {
+                d.X = new Vector3[n]; d.Prev = new Vector3[n];
+                for (int i = 0; i < n; i++) d.X[i] = d.Prev[i] = _skinned[d.Copies[i].Length > 0 ? d.Copies[i][0] : 0].Pos;
+                if (!d.Ready)
+                {
+                    d.Rest = new float[n][];
+                    for (int i = 0; i < n; i++) d.Rest[i] = g.Links[i].Select(j => Vector3.Distance(d.X[i], d.X[j])).ToArray();
+                    d.Ready = true;
+                }
+                continue;
+            }
+            var acc = new Vector3(0, 0, -Gravity) * dt * dt;
+            // 관성: 몸이 움직인 만큼 매달린 입자를 앞 틀의 세계 자리에 남긴다(원본 ProcessTime — 움직임 길이를 잘라 더함). 한 틀에 12 까지
+            if (_worldLast is { } wl && _worldPrev is { } wp && Matrix4x4.Invert(wl, out var wlInv))
+            {
+                var carry = wp * wlInv;   // 앞 틀 모델 공간 → 지금 모델 공간
+                for (int i = 0; i < n; i++)
+                {
+                    if (g.Anchor[i]) continue;
+                    var moved = Vector3.Transform(d.X[i], carry) - d.X[i];
+                    float ml = moved.Length();
+                    if (ml > 12) moved *= 12 / ml;
+                    d.X[i] += moved; d.Prev[i] += moved;
+                }
+            }
+            for (int i = 0; i < n; i++)
+            {
+                if (g.Anchor[i] || d.Copies[i].Length == 0) { d.X[i] = d.Prev[i] = _skinned[d.Copies[i].Length > 0 ? d.Copies[i][0] : 0].Pos; continue; }
+                var x = d.X[i];
+                d.X[i] = x + (x - d.Prev[i]) * (1 - Damping) + acc;
+                d.Prev[i] = x;
+            }
+            for (int it = 0; it < 4; it++)
+                for (int i = 0; i < n; i++)
+                    for (int k = 0; k < g.Links[i].Length; k++)
+                    {
+                        int j = g.Links[i][k];
+                        var dv = d.X[j] - d.X[i];
+                        float len = dv.Length();
+                        if (len < 1e-5f) continue;
+                        float diff = (len - d.Rest[i][k]) / len;
+                        bool ai = g.Anchor[i], aj = g.Anchor[j];
+                        if (ai && aj) continue;
+                        if (ai) d.X[j] -= dv * diff;
+                        else if (aj) d.X[i] += dv * diff;
+                        else { d.X[i] += dv * (diff * 0.5f); d.X[j] -= dv * (diff * 0.5f); }
+                    }
+            for (int i = 0; i < n; i++)
+                foreach (int v in d.Copies[i]) _skinned[v].Pos = d.X[i];
+        }
     }
 
     /// <summary>효과 그리기: 그림자 없이, 모든 면을 더하기 섞기로.</summary>
@@ -281,6 +379,9 @@ internal sealed class CharacterRenderer : IDisposable
 
     private static readonly bool NoOpacity = Environment.GetEnvironmentVariable("MC_NO_OPACITY") is { Length: > 0 };
 
+    /// <summary>눈알 밀어 넣기(모델 단위) — 확인용 MC_EYE_INSET 으로 바꿈.</summary>
+    private static readonly float EyeInset = float.TryParse(Environment.GetEnvironmentVariable("MC_EYE_INSET"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float ei) ? ei : 0f;   // 기본 0 — 밀어 넣어도 얼굴에 가려지지 않아(깊이 가림 의심) 효과 없음, 원인 찾는 중
+
     private void DrawAttachments(Constants c, Matrix4x4 world)
     {
         foreach (var (model, bone) in _attach)
@@ -295,7 +396,16 @@ internal sealed class CharacterRenderer : IDisposable
             }
             if (r == null || r == this) continue;
             r.Pose(0, 0);
-            var m = _bones[bone] * world;
+            var bm = _bones[bone];
+            // 눈알(에스텔 3do 53·54 처럼 크기 ≈ 0.09 인 눈 뼈에 붙는 것)은 원본 모델에서도 눈꺼풀보다 0.2 쯤 앞으로 나와
+            // 클로즈업에서 튀어나와 보인다(사용자: 프롤로그 눈이 무섭다) — 패치판은 눈 앞쪽(뼈 z 축)의 반대로 조금 밀어 넣는다
+            float sc = new Vector3(bm.M11, bm.M12, bm.M13).Length();
+            if (sc is > 0.01f and < 0.2f && EyeInset > 0)
+            {
+                var fwd = Vector3.Normalize(new Vector3(bm.M31, bm.M32, bm.M33));
+                bm.Translation -= fwd * EyeInset;
+            }
+            var m = bm * world;
             r.DrawBody(c, m);
             if (!r.HasSwordLight || NoTrail) continue;
             if (!_trails.TryGetValue(model, out var tr)) _trails[model] = tr = [];
@@ -358,6 +468,7 @@ internal sealed class CharacterRenderer : IDisposable
 
     public void Draw(Constants c, Matrix4x4 world)
     {
+        _worldPrev = _worldLast; _worldLast = world;   // 옷자락 관성(ProcessTime 의 몸 움직임)용
         DrawShadowAndBody(c, world);
         DrawAttachments(c, world);
     }
@@ -391,6 +502,7 @@ internal sealed class CharacterRenderer : IDisposable
         foreach (var (ib, count, tex0, alpha, mat) in _groups)
         {
             if (alpha || c.Tint.W < 0.999f) _gfx.Translucent(); else _gfx.Opaque();
+            _gfx.CharCull();
             // 재질 갈래 0 은 텍스처 알파를 안 쓴다 — 로제 0823 은 84% 가 알파 0 이라 몸이 사라졌었다
             c.LightDir.W = alpha ? 0 : 1;
             _gfx.Set(c);

@@ -16,6 +16,9 @@ internal static class GameState
     public static readonly List<int> Party = [0];
 
     public static void Join(int id) { if (!Party.Contains(id)) Party.Add(id); }
+    /// <summary>조작 캐릭터(CharData id) — 사건 809 가 바꾼다(0x5207f53f: 파티 목록에서 찾아 그 차례를 +0x64 에, 없으면 「%s 는 파티데이터에 없다.」).
+    /// 343 에서 3 으로 바뀌어 618~619 는 그 인물만 서 있다.</summary>
+    public static int Leader;
     public static void Leave(int id) { if (Party.Count > 1) Party.Remove(id); }
 
     /// <summary>장비 — 캐릭터마다 4칸(몸·반지·목걸이·기타), −1 빈칸. 원본 ChrParam +0x114~+0x120.</summary>

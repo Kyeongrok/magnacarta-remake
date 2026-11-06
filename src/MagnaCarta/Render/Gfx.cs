@@ -33,8 +33,14 @@ internal sealed unsafe class Gfx : IDisposable
 {
     public ID3D11Device Device { get; }
     public ID3D11DeviceContext Context { get; }
+    /// <summary>게임 화면 크기 — 창 안에서 맨 위 <see cref="Top"/> 줄(패치판 제목 줄)을 뺀 곳. 장면들은 이것만 본다.</summary>
     public int Width { get; private set; }
     public int Height { get; private set; }
+    /// <summary>뒷버퍼(창 안쪽 전체) 크기.</summary>
+    public int BufferWidth { get; private set; }
+    public int BufferHeight { get; private set; }
+    /// <summary>위쪽 제목 줄 높이 — 게임 화면은 이 아래에 그린다(뷰포트 y).</summary>
+    public int Top { get; private set; }
 
     private readonly IDXGISwapChain1 _swapChain;
     private ID3D11RenderTargetView _back = null!;
@@ -58,9 +64,10 @@ internal sealed unsafe class Gfx : IDisposable
         Context.RSSetState(MapCullMode == "back" ? _cullBack : _cullFront);
     }
 
-    public Gfx(IntPtr hwnd, int width, int height)
+    public Gfx(IntPtr hwnd, int width, int height, int top = 0)
     {
-        Width = width; Height = height;
+        Top = top; BufferWidth = width; BufferHeight = height;
+        Width = width; Height = Math.Max(1, height - top);
         D3D11.D3D11CreateDevice(null, DriverType.Hardware, DeviceCreationFlags.BgraSupport,
             [FeatureLevel.Level_11_0, FeatureLevel.Level_10_1, FeatureLevel.Level_10_0],
             out ID3D11Device device, out ID3D11DeviceContext context).CheckError();
@@ -95,7 +102,7 @@ internal sealed unsafe class Gfx : IDisposable
         using (var back = _swapChain.GetBuffer<ID3D11Texture2D>(0)) _back = Device.CreateRenderTargetView(back);
         _depthTex = Device.CreateTexture2D(new Texture2DDescription
         {
-            Width = (uint)Width, Height = (uint)Height, MipLevels = 1, ArraySize = 1, Format = Format.D32_Float,
+            Width = (uint)BufferWidth, Height = (uint)BufferHeight, MipLevels = 1, ArraySize = 1, Format = Format.D32_Float,
             SampleDescription = new SampleDescription(1, 0), BindFlags = BindFlags.DepthStencil,
         });
         _depth = Device.CreateDepthStencilView(_depthTex);
@@ -103,8 +110,9 @@ internal sealed unsafe class Gfx : IDisposable
 
     public void Resize(int width, int height)
     {
-        if (width <= 0 || height <= 0 || (width == Width && height == Height)) return;
-        Width = width; Height = height;
+        if (width <= 0 || height <= Top || (width == BufferWidth && height == BufferHeight)) return;
+        BufferWidth = width; BufferHeight = height;
+        Width = width; Height = height - Top;
         Context.OMSetRenderTargets((ID3D11RenderTargetView)null!);
         _back.Dispose(); _depth.Dispose(); _depthTex.Dispose();
         _swapChain.ResizeBuffers(0, (uint)width, (uint)height, Format.Unknown, SwapChainFlags.None);
@@ -114,8 +122,9 @@ internal sealed unsafe class Gfx : IDisposable
     public void Begin(Color4 clear)
     {
         Context.OMSetRenderTargets(_back, _depth);
-        Context.RSSetViewport(0, 0, Width, Height);
+        Context.RSSetViewport(0, 0, BufferWidth, BufferHeight);
         Context.ClearRenderTargetView(_back, clear);
+        Context.RSSetViewport(0, Top, Width, Height);
         Context.ClearDepthStencilView(_depth, DepthStencilClearFlags.Depth, 1f, 0);
         Context.VSSetConstantBuffer(0, _constants);
         Context.PSSetConstantBuffer(0, _constants);
@@ -132,6 +141,14 @@ internal sealed unsafe class Gfx : IDisposable
         Context.OMSetBlendState(_opaque);
         Context.OMSetDepthStencilState(_depthWrite);
         Context.RSSetState(cull ? _cullBack : _cullNone);
+    }
+
+    /// <summary>확인용 MC_CHARCULL=front|back — 캐릭터 면 버리기 견주기.</summary>
+    public static readonly string? CharCullMode = Environment.GetEnvironmentVariable("MC_CHARCULL");
+    public void CharCull()
+    {
+        if (CharCullMode == "front") Context.RSSetState(_cullFront);
+        else if (CharCullMode == "back") Context.RSSetState(_cullBack);
     }
 
     public void Translucent()
@@ -156,6 +173,20 @@ internal sealed unsafe class Gfx : IDisposable
         Context.RSSetState(_cullNone);
     }
 
+    /// <summary>제목 줄에 그릴 때 — 뷰포트를 위 줄로, Width/Height 도 잠시 그 크기로(ScreenImage 가 그 크기로 셈한다). 끝나면 <see cref="EndChrome"/>.</summary>
+    public void BeginChrome()
+    {
+        Context.OMSetRenderTargets(_back, _depth);
+        Width = BufferWidth; Height = Math.Max(1, Top);
+        Context.RSSetViewport(0, 0, Width, Height);
+    }
+
+    public void EndChrome()
+    {
+        Width = BufferWidth; Height = BufferHeight - Top;
+        Context.RSSetViewport(0, Top, Width, Height);
+    }
+
     public void Present() => _swapChain.Present(1, PresentFlags.None);
 
     /// <summary>지금 뒷버퍼를 PNG 로 적는다(확인용). Present 앞에서 부른다.</summary>
@@ -165,17 +196,17 @@ internal sealed unsafe class Gfx : IDisposable
         using var back = _swapChain.GetBuffer<ID3D11Texture2D>(0);
         using var staging = Device.CreateTexture2D(new Texture2DDescription
         {
-            Width = (uint)Width, Height = (uint)Height, MipLevels = 1, ArraySize = 1, Format = Format.B8G8R8A8_UNorm,
+            Width = (uint)BufferWidth, Height = (uint)BufferHeight, MipLevels = 1, ArraySize = 1, Format = Format.B8G8R8A8_UNorm,
             SampleDescription = new SampleDescription(1, 0), Usage = ResourceUsage.Staging, CPUAccessFlags = CpuAccessFlags.Read,
         });
         Context.CopyResource(staging, back);
         var map = Context.Map(staging, 0, MapMode.Read);
         try
         {
-            using var bmp = new System.Drawing.Bitmap(Width, Height, System.Drawing.Imaging.PixelFormat.Format32bppRgb);
-            var bits = bmp.LockBits(new System.Drawing.Rectangle(0, 0, Width, Height), System.Drawing.Imaging.ImageLockMode.WriteOnly, bmp.PixelFormat);
-            for (int y = 0; y < Height; y++)
-                Buffer.MemoryCopy((void*)(map.DataPointer + y * (nint)map.RowPitch), (void*)(bits.Scan0 + y * bits.Stride), bits.Stride, Width * 4);
+            using var bmp = new System.Drawing.Bitmap(BufferWidth, BufferHeight, System.Drawing.Imaging.PixelFormat.Format32bppRgb);
+            var bits = bmp.LockBits(new System.Drawing.Rectangle(0, 0, BufferWidth, BufferHeight), System.Drawing.Imaging.ImageLockMode.WriteOnly, bmp.PixelFormat);
+            for (int y = 0; y < BufferHeight; y++)
+                Buffer.MemoryCopy((void*)(map.DataPointer + y * (nint)map.RowPitch), (void*)(bits.Scan0 + y * bits.Stride), bits.Stride, BufferWidth * 4);
             bmp.UnlockBits(bits);
             bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
         }

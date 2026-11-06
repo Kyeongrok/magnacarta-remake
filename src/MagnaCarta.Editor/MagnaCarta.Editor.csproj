@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!-- 마그나카르타 패치판 개발도구(창세기전 WarOfGenesis.Editor 처럼 WPF 창 여럿). 자료 읽개는 게임 프로젝트를 그대로 쓴다. -->
+    <PropertyGroup>
+        <OutputType>WinExe</OutputType>
+        <TargetFramework>net8.0-windows</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <UseWPF>true</UseWPF>
+        <RootNamespace>MagnaCarta.Editor</RootNamespace>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\MagnaCarta\MagnaCarta.csproj" />
+    </ItemGroup>
+
+</Project>

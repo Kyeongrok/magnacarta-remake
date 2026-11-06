@@ -242,7 +242,7 @@ internal sealed class Field
             }
         }
         catch (InvalidDataException) { }
-        f.Events = FieldEvent.FindAndParse(r.Data);
+        f.Events = FieldEvent.FindAndParse(r.Data, r.Pos);
         return f;
     }
 
@@ -348,12 +348,23 @@ internal sealed class FieldEvent
     }
 
     /// <summary>파일 끝에서 정확히 끝나는 사건 묶음의 시작을 뒤에서부터 찾는다(story.find_events 와 같다).</summary>
-    public static List<FieldEvent> FindAndParse(byte[] d)
+    /// <remarks>
+    /// 뒤에서 처음 맞는 자리를 쓰면 29 개 필드(161·655·771 …)에서 묶음 뒤쪽의 가짜 짝을 잡아 사건 대부분을 잃었다
+    /// (655 = 장 넘김 필드는 사건이 비어 이야기가 133 → 655 에서 막힘). → F 묶음을 다 읽은 자리를 먼저 시험하고,
+    /// 안 되면 파일 끝에서 정확히 끝나는 후보 중 **가장 앞의 것**(가장 큰 묶음)을 쓴다.
+    /// </remarks>
+    public static List<FieldEvent> FindAndParse(byte[] d, int hint = -1)
     {
+        if (hint > 0 && hint < d.Length - 4 && Parse(d, hint) is { } atHint && Plausible(atHint)) return atHint;
+        List<FieldEvent>? best = null, any = null;
         for (int off = d.Length - 8; off > 0; off -= 4)
-            if (Parse(d, off) is { } list) return list;
-        return [];
+            if (Parse(d, off) is { } list) { any = list; if (Plausible(list)) best = list; }
+        return best ?? any ?? [];
     }
+
+    /// <summary>조건 갈래는 0·100·101·302·304(0x52071af6 + 전투 302), 명령은 0~999 — 468 의 앞 후보처럼 실수 값이 조건 자리에 오는 가짜를 거른다.</summary>
+    private static bool Plausible(List<FieldEvent> list) =>
+        list.All(e => e.Conditions.All(c => c[0] is 0 or 100 or 101 or 302 or 304) && e.Actions.All(a => a[0] is >= 0 and < 1000));
 }
 
 /// <summary>필드 점 빛 하나(fld 0x428~, 0x4c 바이트).</summary>
