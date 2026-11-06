@@ -24,12 +24,13 @@ internal sealed partial class BattleScene
     private ID3D11Texture2D? _hudTex;
     private ID3D11ShaderResourceView? _hudView;
     private BitmapFont? _hudFont;
+    private int _tpPct = 100;
 
     private static (Image32 Img, int X, int Y) F(int n)
     {
         if (!Frames.TryGetValue(n, out var f))
         {
-            if (McFiles.Exists("FrameData", n, "fdi")) { var fd = FrameData.Load(n); f = (fd.Compose(), fd.X, fd.Y); }
+            if (McFiles.Exists("FrameData", n, "fdi")) { var fd = FrameData.Load(n); f = (fd.Compose(cover: CardBright.ContainsValue(n) || CardDark.ContainsValue(n)), fd.X, fd.Y); }   // 카드는 FrameData 크기 80×150 보다 그림(128)이 넓다 — 자르지 않음
             else f = (new Image32(1, 1), 0, 0);
             Frames[n] = f;
         }
@@ -37,6 +38,8 @@ internal sealed partial class BattleScene
     }
 
     private void Put(int n, Vector2 at) => _hud.Blend(F(n).Img, (int)at.X, (int)at.Y);
+    /// <summary>HP × 100 / 최대 HP(0x5208e28c / 0x5208e244, 버림).</summary>
+    private static int HpPct(Fighter f) => f.MaxHp > 0 ? Math.Clamp(f.Hp * 100 / f.MaxHp, 0, 100) : 0;
     private static Vector2 Pos(int n) => new(F(n).X, F(n).Y);
 
     private void DrawHud(Matrix4x4 vp)
@@ -53,12 +56,12 @@ internal sealed partial class BattleScene
             if (table.TryGetValue(f.P.Id, out int card))
             {
                 var at = box + Base + new Vector2(116 * i, 0);
+                // HP 막대: 카드 = 막대 객체(graph(카드, WinDiData 43, 1), 0x520abe44) — 카드 그림 BGR 의 막대 칸 (7, 42)~(107, 46) 에
+                // 같은 초록 (0, 255, 126) 을 가로 HP %, 세로 120 %(4 × 1.2 → 4) 로 깔고 카드를 얹는다
+                _hud.Fill((int)at.X + 7, (int)at.Y + 42, 100 * HpPct(f) / 100, 4, 0, 255, 126);
                 Put(card, at);
                 string hp = $"{f.Hp,4} / {f.MaxHp,4}";
                 _hudFont.Draw(_hud, (int)at.X + 28, (int)at.Y + 20, hp, 255, 255, 255);
-                // TP·필살 단계는 원본 카드 안 자리를 못 땄다 — 카드 아래에 패치판이 덧붙임
-                _hud.Fill((int)at.X + 28, (int)at.Y + 38, (int)(70 * f.Tp / 30f), 3, 90, 150, 230);
-                if (f.Apocalypse > 0) _hudFont.Draw(_hud, (int)at.X + 80, (int)at.Y + 4, new string('*', f.Apocalypse), 255, 200, 80);
             }
             else
             {
@@ -67,12 +70,19 @@ internal sealed partial class BattleScene
                 _hud.Fill((int)at.X + 4, (int)at.Y + 2, 108, 44, (byte)(turn ? 70 : 30), (byte)(turn ? 50 : 30), (byte)(turn ? 20 : 30), 200);
                 _hudFont.Draw(_hud, (int)at.X + 8, (int)at.Y + 4, f.P.Name, 255, 255, 255);
                 _hudFont.Draw(_hud, (int)at.X + 28, (int)at.Y + 20, $"{f.Hp,4} / {f.MaxHp,4}", 255, 255, 255);
-                _hud.Fill((int)at.X + 28, (int)at.Y + 38, (int)(70 * f.Tp / 30f), 3, 90, 150, 230);
+                _hud.Fill((int)at.X + 7, (int)at.Y + 42, 100 * HpPct(f) / 100, 4, 0, 255, 126);
             }
             i++;
         }
-        Put(58, Pos(58) + Base + Right);                                 // TP 막대 바탕(값 식은 못 땄다)
+        // TP 막대 m_pTPGraph(0x520596a0): 그림 58 뒤에 WinDiData 31 색(0, 255, 126) 사각형을 남은 TP % 만큼 깐다(0x5205996f — 가로 = 칸 × %/100).
+        // 값은 턴 시작 100(0x520a46c9), 그 뒤 (지금 TP − 쓸 TP) × 100 / 최대(0x520a4bc4) — 아군 차례에만 바뀌고 적 차례엔 그대로 둔다.
+        if (_actor is { Enemy: false } a0 && a0.P.Tp > 0) _tpPct = Math.Clamp(a0.Tp * 100 / a0.P.Tp, 0, 100);
+        var tpAt = Pos(58) + Base + Right;
+        _hud.Fill((int)tpAt.X + 7, (int)tpAt.Y + 12, 150 * _tpPct / 100, 19, 0, 255, 126);   // 칸 = BGR 96 의 막대 칸 (7, 12)~(157, 28), 세로 120 %
+        Put(58, tpAt);
         if (_actor != null) Put(_actor.P.TurnFace > 0 ? _actor.P.TurnFace : _actor.Enemy ? 40 : TurnFaces.GetValueOrDefault(_actor.P.Id, 25), new Vector2(583, 306) + Base + Right);
+        // 크래시 스택 「0~3 CRASH STACKS」 FrameData 258~261 — 차례가 아군이면 그 단계, 아니면 숨김(0x520b0dc7, 640판 (537, 357))
+        if (_actor is { Enemy: false } && _phase is Phase.Command or Phase.Acting) Put(258 + Math.Clamp(_actor.Apocalypse, 0, 3), new Vector2(537, 357) + Base + Right);
         if (_phase == Phase.Command && _actor is { Enemy: false })
         {
             var mb = Pos(56);

@@ -365,7 +365,8 @@ internal sealed class CharacterRenderer : IDisposable
     private void DrawShadowAndBody(Constants c, Matrix4x4 world)
     {
         var ctx = _gfx.Context;
-        // 발밑 그림자
+        // 발밑 그림자 — 많이 흐린 배우(사건 208)는 뺀다
+        if (c.Tint.W < 0.5f) { DrawBody(c, world); return; }
         c.World = Matrix4x4.CreateScale(14, 14, 1) * Matrix4x4.CreateTranslation(world.Translation + new Vector3(0, 0, 0.6f));
         _gfx.Set(c);
         _gfx.Translucent();
@@ -389,7 +390,7 @@ internal sealed class CharacterRenderer : IDisposable
         ctx.PSSetShader(_ps);
         foreach (var (ib, count, tex0, alpha, mat) in _groups)
         {
-            if (alpha) _gfx.Translucent(); else _gfx.Opaque();
+            if (alpha || c.Tint.W < 0.999f) _gfx.Translucent(); else _gfx.Opaque();
             // 재질 갈래 0 은 텍스처 알파를 안 쓴다 — 로제 0823 은 84% 가 알파 0 이라 몸이 사라졌었다
             c.LightDir.W = alpha ? 0 : 1;
             _gfx.Set(c);

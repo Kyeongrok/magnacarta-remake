@@ -89,7 +89,8 @@ internal sealed class Affect
                         case 508: af.Steps.Add(new Step(tick, 508, c[1], c[2])); break;   // [표2 차례, ?] 동영상
                         case 310: af.Steps.Add(new Step(tick, 310, c[1], c[2], c[3])); break;  // [표1 차례, 크기 %, 틀 수−1]
                         case 306: af.Steps.Add(new Step(tick, 306, c[1], c[2], c[3])); break;  // [표1 차례, 자리, 틀]
-                        case 302 or 303: af.Steps.Add(new Step(tick, 303, c[1], 0)); break;    // 효과 끄기(추정)
+                        // 301 = 꺼짐(모델 +0x118 — 그리기·갱신 둘 다 멈춤) · 303 = 숨기기(+0x114) → 패치판은 둘 다 효과를 없앤다. 302 = 보이기(+0x114 = 0) — 이미 보이므로 할 일 없음
+                        case 301 or 303: af.Steps.Add(new Step(tick, 303, c[1], 0)); break;
                         case 500: af.Steps.Add(new Step(tick, 500, c[1], c[2], c[3])); break;  // [표5 차례, 깃발, 자리]
                         case 300: af.Steps.Add(new Step(tick, 300, c[1], c[2], c[3], c[4])); break;   // [표1 차례, 시퀀스, 되풀이(−1 끝없이), 자리]
                     }

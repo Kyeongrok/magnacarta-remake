@@ -34,7 +34,7 @@ internal static class SoundEffects
         string wav = Path.Combine(dir, $"sed{number:D4}.wav");
         if (!File.Exists(wav)) File.WriteAllBytes(wav, d.AsSpan(at).ToArray());
         if (mciSendStringW($"open \"{wav}\" type mpegvideo alias {key}", null, 0, IntPtr.Zero) != 0) return;
-        mciSendStringW($"setaudio {key} volume to 400", null, 0, IntPtr.Zero);
+        mciSendStringW($"setaudio {key} volume to {400 * Volume.Sound / Volume.Max}", null, 0, IntPtr.Zero);
         mciSendStringW($"play {key} repeat", null, 0, IntPtr.Zero);
         Loops.Add(key);
     }
@@ -44,7 +44,7 @@ internal static class SoundEffects
     /// <summary>MCI 소리 크기 0~1000.</summary>
     public static void SetLoopVolume(string key, int volume)
     {
-        if (Loops.Contains(key)) mciSendStringW($"setaudio {key} volume to {Math.Clamp(volume, 0, 1000)}", null, 0, IntPtr.Zero);
+        if (Loops.Contains(key)) mciSendStringW($"setaudio {key} volume to {Math.Clamp(volume, 0, 1000) * Volume.Sound / Volume.Max}", null, 0, IntPtr.Zero);
     }
 
     public static void StopLoop(string key)
@@ -75,8 +75,8 @@ internal static class SoundEffects
             }
             Cache[number] = wav;
         }
-        if (wav == null) return;
-        _current = wav;
-        PlaySound(wav, IntPtr.Zero, SND_ASYNC | SND_MEMORY | SND_NODEFAULT);
+        if (wav == null || Volume.Sound <= 0) return;
+        _current = Volume.ScaleWav(wav, Volume.Sound);
+        PlaySound(_current, IntPtr.Zero, SND_ASYNC | SND_MEMORY | SND_NODEFAULT);
     }
 }

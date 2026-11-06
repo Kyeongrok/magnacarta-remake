@@ -26,6 +26,8 @@ internal sealed class GameWindow : IDisposable
     {
         _script = new Queue<string>((script ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
         _test = script != null;
+        // 시험(--script)은 사용자의 AUTO 칸을 덮지 않게 자동 저장을 끈다 — MC_TEST_AUTOSAVE=1 이면 켬
+        if (_test && Environment.GetEnvironmentVariable("MC_TEST_AUTOSAVE") is not { Length: > 0 }) Scenes.SaveGame.AutoSave = false;
         Scenes.BugReport.UploadQueued(_test);   // 지난번에 못 보낸 버그 리포트
         _proc = WndProc;
         var instance = Win32.GetModuleHandleW(null);
@@ -41,8 +43,11 @@ internal sealed class GameWindow : IDisposable
         Win32.RegisterClassExW(ref wc);
         var rect = new Win32.Rect { Right = 1200, Bottom = 900 };
         Win32.AdjustWindowRect(ref rect, Win32.WS_OVERLAPPEDWINDOW, false);
-        _hwnd = Win32.CreateWindowExW(0, ClassName, "마그나카르타 — 패치판", Win32.WS_OVERLAPPEDWINDOW | Win32.WS_VISIBLE,
-            Win32.CW_USEDEFAULT, Win32.CW_USEDEFAULT, rect.Width, rect.Height, IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
+        // 시험(--script)은 뒤에서 — 창을 화면 밖에 띄우고 포커스를 뺏지 않으며 작업 표시줄에도 안 보인다(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW).
+        // 대본 입력은 창 메시지가 아니라 직접 넣으므로 포커스가 없어도 된다. 보면서 확인하려면 MC_SHOW_WINDOW=1
+        bool background = _test && Environment.GetEnvironmentVariable("MC_SHOW_WINDOW") is not { Length: > 0 };
+        _hwnd = Win32.CreateWindowExW(background ? 0x08000000 | 0x00000080 : 0, ClassName, "마그나카르타 — 패치판", Win32.WS_OVERLAPPEDWINDOW | Win32.WS_VISIBLE,
+            background ? -20000 : Win32.CW_USEDEFAULT, background ? -20000 : Win32.CW_USEDEFAULT, rect.Width, rect.Height, IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
         var ico = Path.Combine(Data.McFiles.Dir, "mc.ico");
         if (File.Exists(ico))
         {
@@ -53,6 +58,9 @@ internal sealed class GameWindow : IDisposable
         _gfx = new Gfx(_hwnd, client.Width, client.Height);
         _screen = new ScreenImage(_gfx);
         // 확인용: --field 로 바로 들어갈 때 MC_TEST_PARTY=0,1,2 면 파티를 그렇게(조우 전투 이기기 확인용)
+        // 확인용: MC_TEST_SWITCH=124=1,125=0 — 전역 스위치를 미리 켠다
+        if (field >= 0 && Environment.GetEnvironmentVariable("MC_TEST_SWITCH") is { Length: > 0 } tsw)
+            foreach (var kv in tsw.Split(',')) if (kv.Split('=') is [var k, var v] && int.TryParse(k, out int sk) && int.TryParse(v, out int sv)) Scenes.GameState.GlobalSwitches[sk] = sv;
         if (field >= 0 && Environment.GetEnvironmentVariable("MC_TEST_PARTY") is { Length: > 0 } tp)
         { Scenes.GameState.Party.Clear(); Scenes.GameState.Party.AddRange(tp.Split(',').Select(int.Parse)); }
         _scene = battle ? new BattleScene(_gfx, _screen) : field >= 0 ? new FieldScene(_gfx, _screen, field)
@@ -130,6 +138,10 @@ internal sealed class GameWindow : IDisposable
                     break;
                 case "drag": _input.RightDown = true; _input.DragX = int.Parse(parts[1]); _input.DragY = parts.Length > 2 ? int.Parse(parts[2]) : 0; return null;
                 case "undrag": _input.RightDown = false; break;
+                // 마우스(창 안 화소): mouse:x:y 로 옮기고 ldown/lup 으로 왼쪽 단추
+                case "mouse": _input.MouseX = int.Parse(parts[1]); _input.MouseY = int.Parse(parts[2]); break;
+                case "ldown": _input.LeftClicked = true; _input.LeftDown = true; break;
+                case "lup": _input.LeftDown = false; break;
                 case "shot": return string.Join(':', parts[1..]);
                 case "quit": _running = false; return null;
             }
@@ -173,7 +185,8 @@ internal sealed class GameWindow : IDisposable
                 _input.MouseX = x; _input.MouseY = y;
                 return IntPtr.Zero;
             }
-            case Win32.WM_LBUTTONDOWN: _input.LeftClicked = true; return IntPtr.Zero;
+            case Win32.WM_LBUTTONDOWN: _input.LeftClicked = true; _input.LeftDown = true; Win32.SetCapture(hWnd); return IntPtr.Zero;
+            case Win32.WM_LBUTTONUP: _input.LeftDown = false; if (!_input.RightDown) Win32.ReleaseCapture(); return IntPtr.Zero;
             case Win32.WM_RBUTTONDOWN: _input.RightDown = true; Win32.SetCapture(hWnd); return IntPtr.Zero;
             case Win32.WM_RBUTTONUP: _input.RightDown = false; Win32.ReleaseCapture(); return IntPtr.Zero;
             case Win32.WM_MOUSEWHEEL: _input.Wheel += Win32.HighWord(wParam) / 120f; return IntPtr.Zero;
@@ -192,7 +205,7 @@ internal sealed class GameWindow : IDisposable
 
     public void Dispose()
     {
-        Audio.Music.Stop();
+        Audio.Music.Stop(); Audio.Music.Stop2();
         _scene?.Dispose();
         _screen.Dispose();
         _gfx.Dispose();

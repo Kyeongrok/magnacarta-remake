@@ -126,6 +126,16 @@ internal sealed class Field
 
     public int Number, MapNumber, Music, FpbNumber = -1;
     public string PlaceName = "";
+    /// <summary>fld 0xf8(객체 +0x10c, 장면 +0x11d8) — 0 이 아니면 들어올 때 AUTO 칸에 저장하지 않는다(0x5206a954). 1 은 651·655~666 등 사건용 필드 15개.</summary>
+    public bool NoAutoSave;
+    /// <summary>fld 0xf0 안개 단계(−1 없음, 0~39) · 0xec 안개 색 WinDiData 번호 — 필드 들기 0x5206a6ee: 밀도 0.00025 × 단계, 색 = 그 wdi 의 첫 색.</summary>
+    public int FogLevel = -1, FogColorWdi;
+    /// <summary>fld 0xe8 — 음악 1번 채널 SMD(필드 들기 0x52069306: [0x520f2318] 0x52050f03(1, 번호), −1 이면 1번 채널 끔). 290 필드쯤(82·72·70 …) — 배경음 위에 겹치는 두 번째 곡.</summary>
+    public int Music2 = -1;
+    /// <summary>fld 0x40c f32×4 — 화면 바탕(지우기) 색 RGBA, 다음 두 값은 f32 10 · 10000(가까운·먼 자름면으로 보임), 그다음 i32 = 빛 수(분석-던전). 0x5201d66f 로 그리개에.</summary>
+    public System.Numerics.Vector4 ClearColor = new(0.05f, 0.06f, 0.09f, 1);
+    /// <summary>점 빛 — fld 0x424 수, 0x428 부터 0x4c 바이트씩: [0..3] 색 RGBA · [4..7] (0,0,0,1) · [8] 안쪽 반경 · [9] 바깥 반경 · [10] 켜짐(1 이면 들 때 켬, 0x52026e13) · [11] id(사건 513/514 가 씀) · [15..17] 자리. 549 는 벽 횃불 11개(z 42).</summary>
+    public readonly List<FieldLight> Lights = [];
     /// <summary>조우 단계(0~4, 5 없음), 전투 무대 MAP, Mon 무리 5칸, 전투 필드 5칸 — 분석-던전 §1.</summary>
     public int EncounterStep = 5, Stage = -1;
     /// <summary>발소리 바닥(0~8, −1 은 0) — 파일 0x90 → 객체 +0xa8 → dealer +0x16e4 (분석-모션명령).</summary>
@@ -145,6 +155,20 @@ internal sealed class Field
         f.FpbNumber = r.I32();
         r.Pos = 0x10; f.EncounterStep = r.I32(); f.Stage = r.I32();
         r.Pos = 0x90; f.Floor = Math.Clamp(r.I32(), 0, 8);
+        r.Pos = 0xF8; f.NoAutoSave = r.I32() != 0;
+        r.Pos = 0xE8; f.Music2 = r.I32();
+        if (r.Data.Length >= 0x428)
+        {
+            int ln = BitConverter.ToInt32(r.Data, 0x424);
+            for (int k = 0; k < ln && k < 64 && 0x428 + 0x4c * (k + 1) <= r.Data.Length; k++)
+            {
+                int o = 0x428 + 0x4c * k; var b = r.Data;
+                f.Lights.Add(new FieldLight(BitConverter.ToInt32(b, o + 44), new System.Numerics.Vector3(BitConverter.ToSingle(b, o), BitConverter.ToSingle(b, o + 4), BitConverter.ToSingle(b, o + 8)),
+                    BitConverter.ToSingle(b, o + 32), BitConverter.ToSingle(b, o + 36), new System.Numerics.Vector3(BitConverter.ToSingle(b, o + 60), BitConverter.ToSingle(b, o + 64), BitConverter.ToSingle(b, o + 68)), BitConverter.ToInt32(b, o + 40) == 1));
+            }
+        }
+        if (r.Data.Length >= 0x41C) { var b = r.Data; f.ClearColor = new System.Numerics.Vector4(BitConverter.ToSingle(b, 0x40C), BitConverter.ToSingle(b, 0x410), BitConverter.ToSingle(b, 0x414), 1); }
+        r.Pos = 0xEC; f.FogColorWdi = r.I32(); f.FogLevel = r.I32(); if (f.FogLevel is < 0 or >= 40) f.FogLevel = -1;
         r.Pos = 0xC0; for (int k = 0; k < 5; k++) f.Groups[k] = r.I32();
         for (int k = 0; k < 5; k++) f.BattleFields[k] = r.I32();
         var name = r.Data.AsSpan(0xFC, 0x12);
@@ -180,9 +204,18 @@ internal sealed class Field
             int id = r.I32();
             var p0 = r.Vec3();
             Vector3 lo = new(float.MaxValue), hi = new(float.MinValue);
-            for (int k = 0; k < 8; k++) { var v = r.Vec3(); lo = Vector3.Min(lo, v); hi = Vector3.Max(hi, v); }
+            var corners = new Vector3[8];
+            for (int k = 0; k < 8; k++) { var v = r.Vec3(); corners[k] = v; lo = Vector3.Min(lo, v); hi = Vector3.Max(hi, v); }
             int a = r.I32(), b = r.I32(), c = r.I32();
-            f.Cameras.Add(new Cctv(id, p0, lo, hi, a * 10f, b switch { 0 => 10, 1 => 20, 2 => 40, 3 => 60, 4 => 80, _ => 8 }, c));
+            // 민 상자: 꼭짓점마다 c + normalize(c − 처음 자리) × 줄(분석-필드카메라) — 고르기 판정에 쓴다(면 6장 대신 감싸는 상자, 근사)
+            Vector3 plo = new(float.MaxValue), phi = new(float.MinValue);
+            foreach (var cn in corners)
+            {
+                var dir = cn - p0;
+                var pushed = dir.LengthSquared() > 1e-6f ? cn + Vector3.Normalize(dir) * (a * 10f) : cn;
+                plo = Vector3.Min(plo, pushed); phi = Vector3.Max(phi, pushed);
+            }
+            f.Cameras.Add(new Cctv(id, p0, lo, hi, a * 10f, b switch { 0 => 10, 1 => 20, 2 => 40, 3 => 60, 4 => 80, _ => 8 }, c, plo, phi));
         }
         int ne = r.Count(0x70);
         for (int i = 0; i < ne; i++)
@@ -190,8 +223,9 @@ internal sealed class Field
             r.Vec3();
             int id = r.I32();
             Vector3 lo = new(float.MaxValue), hi = new(float.MinValue);
-            for (int k = 0; k < 8; k++) { var v = r.Vec3(); lo = Vector3.Min(lo, v); hi = Vector3.Max(hi, v); }
-            f.Regions.Add(new Region(id, lo, hi));
+            var quad = new Vector2[4];
+            for (int k = 0; k < 8; k++) { var v = r.Vec3(); lo = Vector3.Min(lo, v); hi = Vector3.Max(hi, v); if (k < 4) quad[k] = new Vector2(v.X, v.Y); }
+            f.Regions.Add(new Region(id, lo, hi, quad));
         }
         // F 카메라 컷: {i32 id, i32 −1, i32 틀 수, i32 키 사이 틀, i32 키 수 m, (m+1) × 키 0x4c}
         // 키 = f32[16] 행렬(자리 = 행3, 앞 = −행2, 위 = 행1) + 시야각(도) + near + far — 분석-시작장면 §4
@@ -213,17 +247,38 @@ internal sealed class Field
     }
 
     public record FieldObject(int Id, int Model, int Kind, Vector3 Position, Vector3 Rotation, byte[] Extra);
-    /// <summary>E 상자 = 사건 구역(조건 304 가 id 로 부른다). 8 꼭짓점을 감싸는 상자로 본다.</summary>
-    public record Region(int Id, Vector3 Min, Vector3 Max)
+    /// <summary>
+    /// E 상자 = 사건 구역(조건 304 가 id 로 부른다). 8 꼭짓점 = 위 넷 · 아래 넷 — 바닥이 **기울어진 사각형**인 기둥이다(532 출구 0 은 마름모).
+    /// 감싸는 상자로 보면 들어간 자리가 되돌아가는 출구 안에 잡혀 531 ↔ 532 를 끝없이 오갔다 → 사각형 안쪽(볼록 사각형 변 부호)으로 본다.
+    /// </summary>
+    public record Region(int Id, Vector3 Min, Vector3 Max, Vector2[]? Quad = null)
     {
-        public bool Contains(Vector3 p, float margin = 0) =>
-            p.X >= Min.X - margin && p.X <= Max.X + margin && p.Y >= Min.Y - margin && p.Y <= Max.Y + margin &&
-            p.Z >= Min.Z - 40 && p.Z <= Max.Z + 40;
+        public bool Contains(Vector3 p, float margin = 0)
+        {
+            if (p.X < Min.X - margin || p.X > Max.X + margin || p.Y < Min.Y - margin || p.Y > Max.Y + margin || p.Z < Min.Z - 40 || p.Z > Max.Z + 40) return false;
+            if (Quad is not { Length: 4 }) return true;
+            int pos = 0, neg = 0;
+            for (int i = 0; i < 4; i++)
+            {
+                var a = Quad[i]; var b = Quad[(i + 1) % 4];
+                var e = b - a;
+                float len = e.Length();
+                if (len < 1e-3f) continue;
+                float cross = (e.X * (p.Y - a.Y) - e.Y * (p.X - a.X)) / len;   // 변까지 거리(부호)
+                if (cross > -margin) pos++;
+                if (cross < margin) neg++;
+            }
+            return pos == 4 || neg == 4;
+        }
     }
 
     public readonly Dictionary<int, CameraCut> Cuts = [];
     /// <summary>감시 카메라 — 처음 자리, 움직일 상자, 지킬 거리(줄), 나눗수(0x520532f0 표), c(부드럽게 넘김으로 추정).</summary>
-    public record Cctv(int Id, Vector3 Start, Vector3 Min, Vector3 Max, float Rope, int Divisor, int Smooth);
+    public record Cctv(int Id, Vector3 Start, Vector3 Min, Vector3 Max, float Rope, int Divisor, int Smooth, Vector3 ZoneMin = default, Vector3 ZoneMax = default)
+    {
+        /// <summary>목표가 민 상자 안인가(0x52052d7e — 원본은 민 상자 면 6장 +0x8c~+0xf0 안쪽 판정).</summary>
+        public bool Covers(Vector3 p) => p.X >= ZoneMin.X && p.X <= ZoneMax.X && p.Y >= ZoneMin.Y && p.Y <= ZoneMax.Y && p.Z >= ZoneMin.Z && p.Z <= ZoneMax.Z;
+    }
     public readonly List<Cctv> Cameras = [];
     public readonly List<FieldObject> Objects = [];
     public readonly List<Region> Regions = [];
@@ -300,3 +355,6 @@ internal sealed class FieldEvent
         return [];
     }
 }
+
+/// <summary>필드 점 빛 하나(fld 0x428~, 0x4c 바이트).</summary>
+internal sealed record FieldLight(int Id, System.Numerics.Vector3 Color, float Inner, float Outer, System.Numerics.Vector3 Pos, bool On);

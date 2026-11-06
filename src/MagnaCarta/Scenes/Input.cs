@@ -6,7 +6,7 @@ internal sealed class Input
     private readonly HashSet<int> _down = [], _pressed = [];
 
     public int MouseX, MouseY;
-    public bool LeftClicked, RightDown;
+    public bool LeftClicked, LeftDown, RightDown;
     public int DragX, DragY;
     public float Wheel;
 
@@ -20,7 +20,7 @@ internal sealed class Input
 
     public void KeyUp(int vk) => _down.Remove(vk);
 
-    public void ReleaseAll() { _down.Clear(); RightDown = false; }
+    public void ReleaseAll() { _down.Clear(); RightDown = false; LeftDown = false; }
 
     /// <summary>틀 끝에 막 누른 것들을 비운다.</summary>
     public void EndFrame()

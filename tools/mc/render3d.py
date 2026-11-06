@@ -308,6 +308,11 @@ def render(model, out_png, ani=None, frame=0, size=512, yaw=0.0, local=True, zup
                 tx = (np.mod(u, 1) * tw).astype(int).clip(0, tw - 1)
                 ty = (np.mod(v, 1) * th).astype(int).clip(0, th - 1)
                 col = tex[ty, tx, :3]
+                # 갈래 1·2 재질은 알파로 오려낸다(게임 셰이더와 같게 0.3 아래 버림) — 갈래 0 은 알파를 안 쓴다(분석-렌더링-3D)
+                if mat.flag != 0 and tex.shape[2] == 4:
+                    ok = ok & (tex[ty, tx, 3] >= 77)
+                    if not ok.any():
+                        continue
             else:
                 col = np.full(gx.shape + (3,), 180, "u1")
             # 면 법선으로 가벼운 음영

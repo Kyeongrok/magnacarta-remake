@@ -18,40 +18,71 @@ internal sealed class TitleScene : IScene
     private static readonly (int Normal, int Over)[] ButtonFrames = [(225, 224), (227, 226), (229, 228), (231, 230)];
     // Load game · Continue 는 패치판 세이브 한 칸(SaveGame)을 읽는다 — 없으면 흐리게
     // Load game = 패치판 세이브 + 원본 MC00~03.sav 고르기, Continue = 패치판 세이브
-    private readonly bool[] Enabled = [true, SaveGame.Exists() || Enumerable.Range(0, 4).Any(i => OriginalSave.Peek(i) != null), SaveGame.Exists(), true];
+    private readonly bool[] Enabled = [true, SaveGame.AnyExists() || Enumerable.Range(0, SaveGame.Slots).Any(i => OriginalSave.Peek(i) != null), SaveGame.AnyExists(), true];
 
-    // 불러오기 목록 (-1 = 패치판 세이브, 0~3 = 원본 MCxx.sav)
-    private List<(int Slot, string Label)>? _loadList;
-    private int _loadIndex;
+    // 불러오기 — 원본 LOAD GAME 창(FrameData 109, 250×405)을 가운데에. 칸 줄은 필드 메뉴와 같은 자리(AUTO y69, 1~10 y117+25k).
+    // 쪽 0 = 패치판 칸(AUTO + 01~10), 쪽 1 = 원본 MCnn.sav — 칸 단추 명령 0x5e~0x68 에서 0x5e 를 뺀 수가 파일 번호(0x520810c7 → 0x5207021e 의 "MC%02d.sav")라
+    // 첫 줄 AUTO = MC00, 1~10 = MC01~MC10(줄 차례는 단추 id 차례로 추정). 좌우로 쪽 바꿈.
+    // 줄마다 (_chosen 값, 장소, 시간) — 빈 줄은 null. _chosen: 110 + 칸 = 패치판, 10 + i = 원본
+    private (int Code, string Place, TimeSpan Play)?[]? _loadRows;
+    private int _loadIndex, _loadPage;
+    private bool _hasOriginal;
     private Vortice.Direct3D11.ID3D11ShaderResourceView? _loadTex;
-    private int _loadW, _loadH;
+    private const int LoadX = (ScreenW - 250) / 2, LoadY = (ScreenH - 405) / 2;
+
+    private static int LoadRowY(int row) => row == 0 ? 69 : 117 + 25 * (row - 1);
 
     private void OpenLoadList()
     {
-        _loadList = [];
-        if (SaveGame.Exists()) _loadList.Add((-1, "패치판  " + (SaveGame.Describe() ?? "")));
-        for (int i = 0; i < 4; i++)
-            if (OriginalSave.Peek(i) is { } p)
-                _loadList.Add((i, $"MC{i:D2}  {(p.Place.Length > 0 ? p.Place : "필드 " + p.Field)}  {(int)p.Play.TotalHours}시간 {p.Play.Minutes}분{(p.CrcOk ? "" : "  (CRC 틀림)")}"));
-        _loadIndex = 0;
+        _hasOriginal = Enumerable.Range(0, SaveGame.Slots).Any(i => OriginalSave.Peek(i) != null);
+        _loadPage = SaveGame.AnyExists() || !_hasOriginal ? 0 : 1;
+        FillLoadRows();
         BuildLoadTexture();
+    }
+
+    private void FillLoadRows()
+    {
+        _loadRows = new (int, string, TimeSpan)?[SaveGame.Slots];
+        if (_loadPage == 0)
+            for (int k = 0; k < SaveGame.Slots; k++)
+                _loadRows[k] = SaveGame.Info(k) is { } info ? (110 + k, info.Place, info.Play) : null;
+        else
+            for (int i = 0; i < SaveGame.Slots; i++)
+                if (OriginalSave.Peek(i) is { } p)
+                    _loadRows[i] = (10 + i, $"MC{i:D2} {(p.Place.Length > 0 ? p.Place : "필드 " + p.Field)}{(p.CrcOk ? "" : " (CRC 틀림)")}", p.Play);
+        _loadIndex = Array.FindIndex(_loadRows, r => r != null);
+        if (_loadPage == 0 && SaveGame.Latest() is >= 0 and var latest) _loadIndex = latest;
+        if (_loadIndex < 0) _loadIndex = 0;
     }
 
     private void BuildLoadTexture()
     {
         _loadTex?.Dispose();
         var font = new BitmapFont(0);
-        int w = 300, h = 30 + 18 * _loadList!.Count;
-        var img = new Image32(w, h);
-        img.Fill(0, 0, w, h, 10, 8, 6, 225);
-        img.Fill(0, 0, w, 1, 169, 146, 109); img.Fill(0, h - 1, w, 1, 169, 146, 109);
-        font.Draw(img, 10, 6, "LOAD GAME", 255, 220, 140);
-        for (int i = 0; i < _loadList.Count; i++)
+        var img = new Image32(250, 425);   // 창 아래 20 줄은 쪽 표시
+        img.Blend(FrameData.Load(109).Compose(), 0, 0);
+        for (int k = 0; k < _loadRows!.Length; k++)
         {
-            bool sel = i == _loadIndex;
-            font.Draw(img, 14, 26 + 18 * i, (sel ? "> " : "  ") + _loadList[i].Label, 255, sel ? (byte)230 : (byte)210, sel ? (byte)120 : (byte)200);
+            int ry = LoadRowY(k);
+            bool sel = k == _loadIndex;
+            if (sel)
+            {
+                img.Fill(18, ry - 1, 220, 1, 255, 200, 80); img.Fill(18, ry + 20, 220, 1, 255, 200, 80);
+                img.Fill(17, ry - 1, 1, 22, 255, 200, 80); img.Fill(238, ry - 1, 1, 22, 255, 200, 80);
+            }
+            byte g = sel ? (byte)225 : (byte)205, b = sel ? (byte)130 : (byte)190;
+            if (_loadRows[k] is { } r)
+            {
+                string place = r.Place;
+                while (place.Length > 1 && Width(font, SaveGame.RowText(place, r.Play)) > 210) place = place[..^1];
+                font.Draw(img, 25, ry + 3, SaveGame.RowText(place, r.Play), 255, g, b);   // 원본 줄 글 꼴(필드 메뉴와 같음)
+            }
         }
-        _loadTex = _gfx.Texture(img, false); _loadW = w; _loadH = h;
+        // 쪽 표시 — 원본 창엔 없는 패치판 글(원본 세이브가 있을 때만)
+        if (_hasOriginal) font.Draw(img, 6, 409, _loadPage == 0 ? "패치판 세이브  (좌우: 원본 세이브)" : "원본 세이브 MC00~10  (좌우: 패치판)", 255, 235, 200);
+        _loadTex = _gfx.Texture(img, false);
+
+        static int Width(BitmapFont f, string t) => f.Draw(new Image32(1, 1), 0, 0, t, 0, 0, 0);
     }
 
     private readonly Gfx _gfx;
@@ -112,12 +143,22 @@ internal sealed class TitleScene : IScene
             case Phase.FadeIn:
                 if (_tick >= 50 || input.Pressed(Input.Enter) || input.LeftClicked) { _phase = Phase.Menu; _tick = 0; }
                 break;
-            case Phase.Menu when _loadList != null:
-                if (input.Pressed(Input.DownKey)) { _loadIndex = (_loadIndex + 1) % _loadList.Count; BuildLoadTexture(); }
-                if (input.Pressed(Input.Up)) { _loadIndex = (_loadIndex + _loadList.Count - 1) % _loadList.Count; BuildLoadTexture(); }
-                if (input.Pressed(Input.Escape)) { _loadList = null; break; }
-                if (input.Pressed(Input.Enter) || input.Pressed(Input.Space)) { _chosen = 10 + _loadList[_loadIndex].Slot; _phase = Phase.FadeOut; _tick = 0; }
+            case Phase.Menu when _loadRows != null:
+            {
+                int n = _loadRows.Length, before = _loadIndex, page = _loadPage;
+                int row = -1;
+                for (int k = 0; k < n; k++)
+                    if (mx >= LoadX + 18 && mx < LoadX + 238 && my >= LoadY + LoadRowY(k) && my < LoadY + LoadRowY(k) + 20) row = k;
+                if (input.LeftClicked && row >= 0) _loadIndex = row;
+                if (input.Pressed(Input.DownKey)) _loadIndex = (_loadIndex + 1) % n;
+                if (input.Pressed(Input.Up)) _loadIndex = (_loadIndex + n - 1) % n;
+                if (_hasOriginal && (input.Pressed(Input.Left) || input.Pressed(Input.Right))) { _loadPage ^= 1; FillLoadRows(); }
+                if (input.Pressed(Input.Escape)) { _loadRows = null; _loadTex?.Dispose(); _loadTex = null; break; }
+                if ((input.Pressed(Input.Enter) || input.Pressed(Input.Space) || input.LeftClicked && row >= 0) && _loadRows[_loadIndex] is { } pick)
+                { _chosen = pick.Code; _phase = Phase.FadeOut; _tick = 0; }
+                if (_loadIndex != before || _loadPage != page) BuildLoadTexture();
                 break;
+            }
             case Phase.Menu:
                 if (under >= 0 && Enabled[under]) _hover = under;
                 if (input.Pressed(Input.DownKey)) _hover = Next(_hover, 1);
@@ -136,7 +177,8 @@ internal sealed class TitleScene : IScene
                     {
                         0 => NewGame(),
                         2 or 9 => Continue(),
-                        >= 10 and <= 13 => LoadOriginal(_chosen - 10),
+                        >= 10 and < 10 + SaveGame.Slots => LoadOriginal(_chosen - 10),
+                        >= 110 and < 110 + SaveGame.Slots => LoadPatch(_chosen - 110),
                         3 => null,
                         _ => this,
                     };
@@ -169,9 +211,11 @@ internal sealed class TitleScene : IScene
         return new FieldScene(_gfx, _screen, d.Field, null, (d.Pos, d.Yaw));
     }
 
-    private IScene Continue()
+    private IScene Continue() => SaveGame.Latest() is var k and >= 0 ? LoadPatch(k) : NewGame();
+
+    private IScene LoadPatch(int slot)
     {
-        if (SaveGame.Load() is not { } d) return NewGame();
+        if (SaveGame.Load(slot) is not { } d) return NewGame();
         return new FieldScene(_gfx, _screen, d.Field, null, (new Vector3(d.X, d.Y, d.Z), d.Yaw));
     }
 
@@ -187,8 +231,8 @@ internal sealed class TitleScene : IScene
             float a = Enabled[k] ? 1 : 0.35f;
             _screen.Draw(tex, ox + ButtonX * s, oy + (ButtonY + k * ButtonStep) * s, bw * s, bh * s, new Vector4(f, f, f, a));
         }
-        if (_loadList != null && _loadTex != null)
-            _screen.Draw(_loadTex, ox + (ScreenW - _loadW * 1.5f) / 2 * s, oy + 200 * s, _loadW * 1.5f * s, _loadH * 1.5f * s, Vector4.One);
+        if (_loadRows != null && _loadTex != null)
+            _screen.Draw(_loadTex, ox + LoadX * s, oy + LoadY * s, 250 * s, 425 * s, Vector4.One);
     }
 
     public void Dispose()

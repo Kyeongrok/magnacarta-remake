@@ -213,15 +213,16 @@ internal sealed class FrameData
         7 => (0, h / 2), 8 => (w, h / 2), 9 => (w / 2, h / 2), _ => (0, 0),
     };
 
-    /// <summary>한 장으로 짜 맞춘다. 크기가 0 이면 그림들을 덮는 크기.</summary>
-    public Image32 Compose()
+    /// <summary>한 장으로 짜 맞춘다. 크기가 0 이면(또는 cover 면) 그림들을 덮는 크기.</summary>
+    public Image32 Compose(bool cover = false)
     {
         var bgrs = new Dictionary<int, Image32>();
         foreach (var e in Elements) if (e.Kind == 3 && !bgrs.ContainsKey(e.Id)) bgrs[e.Id] = Images.Bgr(e.Id);
         int w = W, h = H;
-        if (w <= 0 || h <= 0)
+        if (w <= 0 || h <= 0 || cover)
         {
-            w = h = 1;
+            if (w <= 0 || h <= 0) { w = 0; h = 0; }
+            w = Math.Max(w, 1); h = Math.Max(h, 1);
             foreach (var e in Elements)
                 if (e.Kind == 3) { w = Math.Max(w, e.X + bgrs[e.Id].Width); h = Math.Max(h, e.Y + bgrs[e.Id].Height); }
         }

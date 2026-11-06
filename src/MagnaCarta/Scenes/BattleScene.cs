@@ -96,6 +96,7 @@ internal sealed partial class BattleScene : IScene
     private MovieScene? _overlayMovie;
     private readonly List<Field.Cctv> _cctv = [];
     private Vector3[] _cctvPos = [];
+    private Vector4 _battleFog = new(0.02f, 0.02f, 0.03f, 0);   // w = 0 패치판 선형 · > 0 지수 · < 0 끔
     private int _cctvActive = -1;
     private float _lastTicks;
 
@@ -150,6 +151,14 @@ internal sealed partial class BattleScene : IScene
         _screen = screen;
         _ui = new Overlay(gfx, screen);
         _map = new MapRenderer(gfx, WorldMap.Load(setup.Stage));
+        // 안개 — 원본은 전투 필드 fld 0xf0 을 필드처럼 본다: 전투 필드 60개 중 59개가 −1(안개 끔). 그러면 패치판 선형 어둠 안개도 끈다(w < 0)
+        if (setup.BattleField >= 0 && McFiles.Exists("Field", setup.BattleField, "fld"))
+        {
+            var ff = Field.Load(setup.BattleField);
+            if (ff.FogLevel < 0) _battleFog.W = -1;
+            else if (ff.FogLevel > 0 && ff.FogColorWdi > 0 && McFiles.Exists("WinDiData", ff.FogColorWdi, "wdi"))
+            { var fc = WinDi.Colors(ff.FogColorWdi)[0]; _battleFog = new Vector4(fc.R / 255f, fc.G / 255f, fc.B / 255f, 0.00025f * ff.FogLevel); }
+        }
         if (setup.BattleField >= 0 && McFiles.Exists("Field", setup.BattleField, "fld"))
             try { _cctv.AddRange(Field.Load(setup.BattleField).Cameras); } catch (InvalidDataException) { }
         _cctvPos = _cctv.Select(c => c.Start).ToArray();
@@ -174,12 +183,22 @@ internal sealed partial class BattleScene : IScene
 
         // 진형: 아군은 −Y 쪽, 적은 +Y 쪽에서 마주 본다 (지은 배치 — 무작위 전투의 원본 자리는 못 땄다)
         var party = setup.Allies?.Select(a => a.Id).ToArray() ?? setup.Party;
+        // 무작위 전투의 진형 — 전투 필드(597~614·809~814 …)의 물체 갈래 9 = 아군 자리, 10 = 적 자리(0x5209ccc0 가 세어 자리·돌림 24바이트씩 모음).
+        // 필드마다 다르다(600 은 마주 선 두 줄, 597 은 아군이 적을 에워쌈). 없으면 패치판 기본 진형
+        List<Vector3> allySpots = [], foeSpots = [];
+        if (setup.Allies == null && setup.Foes == null && setup.BattleField >= 0 && McFiles.Exists("Field", setup.BattleField, "fld"))
+        {
+            var bfld = Field.Load(setup.BattleField);
+            allySpots = bfld.Objects.Where(o => o.Kind == 9).Select(o => o.Position).ToList();
+            foeSpots = bfld.Objects.Where(o => o.Kind == 10).Select(o => o.Position).ToList();
+        }
+        bool spots = allySpots.Count > 0 || foeSpots.Count > 0;
         bool real = setup.ReturnTo != null || setup.After != null;
         for (int i = 0; i < party.Length; i++)
         {
             if (!chars.ContainsKey(party[i])) continue;
             var c = real ? GameState.Effective(chars[party[i]]) : chars[party[i]];   // 실제 전투는 진화·장비를 더한다
-            var home = setup.Allies?[i].Pos ?? new Vector3((i - (party.Length - 1) / 2f) * 70f, -170f - (i == 1 ? 25 : 0), 0);
+            var home = setup.Allies?[i].Pos ?? (i < allySpots.Count ? allySpots[i] : new Vector3((i - (party.Length - 1) / 2f) * 70f, -170f - (i == 1 ? 25 : 0), 0));
             var f = new Fighter { P = c, R = Body(c), Home = home };
             f.HomeYaw = MathF.PI;   // 정면 −Y 를 +Y 로
             // 손에 든 신기: 처음 신기 모델(CharData 신기) → 지금 신기 모델(진화·원본 세이브) — Sgi +0x6c
@@ -194,12 +213,12 @@ internal sealed partial class BattleScene : IScene
         {
             if (!chars.TryGetValue(group[i], out var c)) continue;
             float x = (i - (group.Count - 1) / 2f) * 110f;
-            var home = setup.Foes?[i].Pos ?? new Vector3(x, 170f + (c.Kind == 5 ? 40 : 0), 0);
+            var home = setup.Foes?[i].Pos ?? (i < foeSpots.Count ? foeSpots[i] : new Vector3(x, 170f + (c.Kind == 5 ? 40 : 0), 0));
             var f = new Fighter { P = c, R = Body(c), Enemy = true, Home = home };
             f.HomeYaw = 0;
             _fighters.Add(f);
         }
-        if (setup.Allies != null || setup.Foes != null)
+        if (setup.Allies != null || setup.Foes != null || spots)
         {
             var foeMid = _fighters.Where(f => f.Enemy).Select(f => f.Home).DefaultIfEmpty().Aggregate(Vector3.Zero, (a, b) => a + b) / Math.Max(1, _fighters.Count(f => f.Enemy));
             var allyMid = _fighters.Where(f => !f.Enemy).Select(f => f.Home).DefaultIfEmpty().Aggregate(Vector3.Zero, (a, b) => a + b) / Math.Max(1, _fighters.Count(f => !f.Enemy));
@@ -240,6 +259,8 @@ internal sealed partial class BattleScene : IScene
 
     // ── 진행 ────────────────────────────────────────────────────────────────
 
+    private static readonly bool TestWin = Environment.GetEnvironmentVariable("MC_TEST_WIN") is { Length: > 0 };
+
     public IScene? Update(float seconds, Input input)
     {
         // 연출 508 동영상(분석-전투연출) — 전투는 그대로 돌고 그 위에 더하기로 겹쳐 튼다
@@ -248,6 +269,8 @@ internal sealed partial class BattleScene : IScene
 
         if (input.Pressed(Input.Escape)) return new TitleScene(_gfx, _screen);
         if (input.Pressed(0x78)) { _auto = !_auto; Say(_auto ? "자동 전투 켬 (F9)" : "자동 전투 끔"); }
+        // 확인용: MC_TEST_WIN=1 이면 적을 모두 쓰러뜨린 것으로(전투 뒤 흐름 확인)
+        if (TestWin && _phase is not (Phase.Won or Phase.Lost)) foreach (var f in Enemies) f.Hp = 0;
         float ticks = seconds * Timing.TicksPerSecond;
         _lastTicks = ticks;
         GameState.PlayMs += seconds * 1000;
@@ -301,7 +324,8 @@ internal sealed partial class BattleScene : IScene
                     if (_setup.After is { } after) { Audio.Music.Stop(); return after(_phase == Phase.Won); }
                     if (_setup.ReturnTo is { } back)
                     {
-                        if (_phase == Phase.Won) { _returned = true; Audio.Music.Play(_setup.ReturnMusic); return back; }
+                        // 원본 전투 사건 명령 11(0x520aced4)이 들기 인자 {2, 자리, 돌림} 으로 필드로 돌아가 다시 든다 — 그때 AUTO 자동 저장도 된다(첫 값 ≠ 1)
+                        if (_phase == Phase.Won) { _returned = true; Audio.Music.Play(_setup.ReturnMusic); (back as FieldScene)?.AutoSaveHere(); return back; }
                         return new TitleScene(_gfx, _screen);
                     }
                     return new BattleScene(_gfx, _screen, _setup);
@@ -664,7 +688,7 @@ internal sealed partial class BattleScene : IScene
             LightColor = new Vector4(0.85f, 0.8f, 0.7f, 1),
             Ambient = new Vector4(0.45f, 0.45f, 0.5f, 1),
             Fog = new Vector4(1500, 6000, 0, 0),
-            FogColor = new Vector4(0.02f, 0.02f, 0.03f, 1),
+            FogColor = _battleFog,
             CameraPos = new Vector4(camEyeNow, 1),
         };
         _map.Draw(c);

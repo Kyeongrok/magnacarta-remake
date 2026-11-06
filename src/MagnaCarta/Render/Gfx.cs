@@ -23,6 +23,9 @@ internal struct Constants
     public Vector4 Fog;           // x 시작, y 끝, z 1 이면 라이트맵 있음
     public Vector4 FogColor;
     public Vector4 CameraPos;
+    // 필드 점 빛 넷(fld 0x428 기록) — 자리 xyz · w 바깥 반경(0 이면 없음), 색 rgb · w 안쪽 반경
+    public Vector4 Point0Pos, Point1Pos, Point2Pos, Point3Pos;
+    public Vector4 Point0Col, Point1Col, Point2Col, Point3Col;
 }
 
 /// <summary>D3D11 장치·스왑체인·깊이 버퍼와 그리기 상태들.</summary>

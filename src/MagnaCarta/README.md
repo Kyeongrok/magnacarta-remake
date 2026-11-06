@@ -23,11 +23,16 @@ dotnet run --project src\MagnaCarta -- --script "wait:2.2;key:enter;wait:3;hold:
 - 시작 화면(원본 그림·단추·판 번호·BGM 17). Start game → 651 → 626(프롤로그 글) → 625 → 114 → 531 원본 사건대로(대사·얼굴·목소리·카메라 컷).
 - 필드: 원본 감시 카메라(V 로 뒤따르는 카메라), 출구로 필드 이동, 무작위 조우 → 전투 → 복귀, 마을 사람 대화·아이템, 보물상자, 사건 전투, 파티 넣기, 신기 진화.
 - 전투: 원본 공식(능력치·피해·턴·TP·연결공격·오버크래쉬), F9 자동 전투.
-- 상태 창(I/Tab) — 능력치·신기·아이템·장비 끼기. F5 저장, 시작 화면 Load game/Continue.
+- 상태 창(I/Tab) — 원본 Status · Carta · Item · Party(출전 넷 고르기) 쪽 + 패치판 장비 끼기 목록.
+- 시스템 메뉴(Esc) — 원본 SAVE / LOAD 창(AUTO + 01~10, 「선택하신 항목이 정확합니까?」 확인), AUDIO SETTINGS(BGM·SOUND·VOICE 0~100, 기본 70·100·75), 시작 화면으로.
+- 자동 저장 — 원본처럼 필드에 들 때(사건 필드 15개 빼고)와 무작위 전투를 이기고 돌아올 때 AUTO 칸에. F5 도 AUTO.
+- 필드 안개 — fld 0xf0 단계 · 0xec 색(WinDiData), 사건 511/512 로 바꾸기·끄기(지수 꼴은 추정).
+- 나침반(화면 오른쪽 위) — 원본 판·화살, 사건 명령 15 가 잇는 길잡이 깜빡이. 사건 중엔 숨김.
+- 시작 화면 Load game — 원본 LOAD GAME 창, 패치판 칸과 원본 MC00~MC10.sav(좌우로 쪽 바꿈).
 
 ## 조작
 
-필드: 방향키/WASD 걷기 · Shift 달리기 · Space 말 걸기/열기/대사 넘기기 · I/Tab 상태 · V 시점 · F5 저장 · B 시험 전투 · Esc 시작 화면 · F12 화면 찍기(`shots\`).
+필드: 방향키/WASD 걷기 · Shift 달리기 · Space 말 걸기/열기/대사 넘기기 · I/Tab 상태 · V 시점 · F5 저장(AUTO) · Esc 시스템 메뉴 · F12 버그 리포트 · B 시험 전투(개발 빌드만).
 전투: Z 공격(때맞춰 연타 = 연결) · X 기술 · C 오버크래쉬 · A/D 대상 · Space 턴 끝 · F9 자동.
 
 ## 확인용 환경 변수
@@ -39,8 +44,11 @@ dotnet run --project src\MagnaCarta -- --script "wait:2.2;key:enter;wait:3;hold:
 | `MC_EVENT_LOG=파일` | 돌린 사건 명령을 한 줄씩 |
 | `MC_BATTLE_LOG=파일` | 전투 상태를 반 초마다 |
 | `MC_TEST_EXIT=k` · `MC_TEST_NPC=k\|chest` · `MC_TEST_ENCOUNTER=1` · `MC_TEST_EVOLVE=id` | 출구·마을 사람·상자 앞으로 옮기기, 조우 주기 30틱, 진화 사건 흉내 |
+| `MC_TEST_PARTY=0,1,2` · `MC_TEST_SWITCH=124=1` | `--field` 시험의 파티 · 전역 스위치 |
+| `MC_TEST_WIN=1` | 전투를 바로 이김(전투 뒤 흐름 확인) |
+| `MC_TEST_AUTOSAVE=1` | `--script` 시험에서도 자동 저장(기본은 사용자 AUTO 칸을 지키려고 끔) |
 
-오류가 나면 실행 폴더에 `crash.txt` 가 남는다. 세이브는 `%LOCALAPPDATA%\MagnaCartaPatch\save0.json`.
+오류가 나면 실행 폴더에 `crash.txt` 가 남는다. 세이브는 `%LOCALAPPDATA%\MagnaCartaPatch\save0.json`(AUTO) ~ `save10.json`, 소리 크기는 같은 폴더 `audio.txt`.
 
 원본에서 못 딴 값·고친 원본 버그·고를 것은 옵시디안 `Project\Magnacarta\작업\패치목록.md`, 분석은 `분석\`. 분석용 파이썬은 `tools\mc\`.
 
